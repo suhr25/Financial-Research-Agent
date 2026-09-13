@@ -66,7 +66,8 @@ storage layer with distinct `source` / `claim` / `evidence` / `verification_resu
 ## 3. Technology Stack
 
 - **Python 3.11+**, FastAPI, Pydantic v2
-- **LLM**: Claude API (`anthropic` SDK) or OpenAI API, behind a swappable `LLMProvider`
+- **LLM**: Claude (`anthropic` SDK), OpenAI, or Groq - behind a swappable `LLMProvider`,
+  with optional tokens-per-minute pacing for rate-limited free tiers
 - **Web search**: Tavily or SerpAPI, behind a swappable `SearchProvider`
 - **Financial data**: SEC EDGAR (XBRL company facts, no key required) as the primary-filing
   source; Alpha Vantage or yfinance as the structured financial-API source
@@ -83,6 +84,7 @@ Every external integration sits behind an adapter interface so a provider can be
 LLMProvider          SearchProvider         FinancialDataProvider
   |- ClaudeProvider     |- TavilyProvider      |- AlphaVantageProvider
   |- OpenAIProvider     |- SerpAPIProvider     |- YFinanceProvider
+  |- GroqProvider       |                      |
   (mock: see below)     |- MockSearchProvider  |- MockFinancialDataProvider
                                                 (SEC EDGAR handled separately, primary-filing tier)
 ```
@@ -132,13 +134,14 @@ See `.env.example` for the full list. Key ones:
 | Variable | Purpose |
 |---|---|
 | `DEMO_MODE` | `true` forces deterministic mock providers everywhere (default) |
-| `LLM_PROVIDER` | `claude` or `openai` |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | LLM credentials |
+| `LLM_PROVIDER` | `claude`, `openai`, or `groq` |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GROQ_API_KEY` | LLM credentials |
+| `LLM_TPM_LIMIT` | Optional tokens-per-minute budget; paces LLM calls instead of hitting 429s |
 | `SEARCH_PROVIDER` | `tavily` or `serpapi` |
 | `TAVILY_API_KEY` / `SERPAPI_API_KEY` | Web search credentials |
 | `ALPHAVANTAGE_API_KEY` | Optional; falls back to yfinance (no key) if unset |
 | `SEC_EDGAR_USER_AGENT` | Required by SEC's fair-access policy for EDGAR requests |
-| `MAX_FOLLOWUP_ITERATIONS`, `MAX_RESEARCH_QUERIES` | Bounds on the follow-up research loop |
+| `MAX_FOLLOWUP_ITERATIONS`, `MAX_RESEARCH_QUERIES` | Bounds on the follow-up research loop. Each extra iteration re-runs retrieval + extraction + verification, so `0` keeps runs fastest on a rate-limited tier |
 
 ## 6. Running Locally
 
@@ -196,8 +199,8 @@ still tagged with its provider's normal tier, since it succeeded).
 
 | Endpoint | Description |
 |---|---|
-| `POST /api/research` | Runs the full pipeline for a query, returns the `ResearchRun` |
-| `GET /api/research/{id}` | Fetch a research run's status/plan |
+| `POST /api/research` | Queues a research run; returns `202` immediately with a `research_run_id` (the pipeline runs in the background) |
+| `GET /api/research/{id}` | Fetch a run's live status/plan - poll this until `complete` or `failed` |
 | `GET /api/research/{id}/claims` | All extracted + verified claims |
 | `GET /api/research/{id}/sources` | All retrieved sources (with full text + provenance) |
 | `GET /api/research/{id}/conflicts` | Detected conflicts between sources |
