@@ -19,6 +19,11 @@ from app.schemas import Source, SourceTier, SourceType
 
 logger = logging.getLogger("financial_research_agent.retrieval.web_search")
 
+# Search APIs occasionally hang; a tight timeout keeps one slow query from
+# dominating a retrieval round (they now also run concurrently, so this
+# bounds the whole round rather than each call serially).
+SEARCH_TIMEOUT_SECONDS = 8.0
+
 REPUTABLE_PRESS_DOMAINS = {
     "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "cnbc.com",
     "apnews.com", "barrons.com", "marketwatch.com", "forbes.com",
@@ -54,7 +59,7 @@ class TavilyProvider(SearchProvider):
                     "max_results": max_results,
                     "include_raw_content": True,
                 },
-                timeout=15.0,
+                timeout=SEARCH_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -97,7 +102,7 @@ class SerpAPIProvider(SearchProvider):
             resp = httpx.get(
                 "https://serpapi.com/search.json",
                 params={"q": query, "api_key": self.settings.serpapi_api_key, "num": max_results},
-                timeout=15.0,
+                timeout=SEARCH_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
             data = resp.json()

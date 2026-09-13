@@ -1,10 +1,27 @@
 """End-to-end test using the FastAPI app with mocked external providers
 (DEMO_MODE, forced by conftest.py) - no live API dependency, per PRD
 section 21: 'at least one end-to-end test using mocked external providers'.
+
+POST /research returns immediately (status=pending) and runs the pipeline
+in a background thread - see ResearchOrchestrator.start_async - so real
+runs with paced LLM calls don't block the HTTP response for minutes. Tests
+poll GET /research/{id} for the terminal status, same as the frontend does.
 """
+import time
+
 from fastapi.testclient import TestClient
 
 from app.main import app
+
+
+def _poll_until_terminal(client: TestClient, run_id: str, timeout: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        run = client.get(f"/api/research/{run_id}").json()
+        if run["status"] in ("complete", "failed"):
+            return run
+        time.sleep(0.05)
+    raise AssertionError(f"research_run_id={run_id} did not reach a terminal status within {timeout}s")
 
 
 def test_full_research_pipeline_via_api():
@@ -14,10 +31,10 @@ def test_full_research_pipeline_via_api():
         assert health.json()["demo_mode"] is True
 
         resp = client.post("/api/research", json={"query": "Analyze Apple Q3 2024"})
-        assert resp.status_code == 200
-        run = resp.json()
+        assert resp.status_code == 202
+        run_id = resp.json()["research_run_id"]
+        run = _poll_until_terminal(client, run_id)
         assert run["status"] == "complete"
-        run_id = run["research_run_id"]
 
         claims_resp = client.get(f"/api/research/{run_id}/claims")
         assert claims_resp.status_code == 200
@@ -46,8 +63,9 @@ def test_full_research_pipeline_via_api():
 def test_unresolvable_company_fails_gracefully_not_with_a_server_error():
     with TestClient(app) as client:
         resp = client.post("/api/research", json={"query": "Analyze Zzzznotarealcompany Q1 2024"})
-        assert resp.status_code == 200
-        run = resp.json()
+        assert resp.status_code == 202
+        run_id = resp.json()["research_run_id"]
+        run = _poll_until_terminal(client, run_id)
         assert run["status"] == "failed"
         assert run["error"]
 

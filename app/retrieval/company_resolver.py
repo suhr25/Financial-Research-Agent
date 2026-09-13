@@ -144,20 +144,29 @@ class CompanyResolver:
         )
 
     def find_mentions(self, text: str) -> list[str]:
-        """Scan free text for substrings matching known company names/tickers
-        in the current directory. Used by the deterministic mock QueryPlanner
-        (DEMO_MODE) to extract company mentions without an LLM. Returns raw
-        names in order of first appearance, deduplicated."""
+        """Scan free text for whole-word matches of known company names/
+        tickers in the current directory. Used by the deterministic mock
+        QueryPlanner fallback (DEMO_MODE, or whenever a live LLM call fails)
+        to extract company mentions without an LLM. Returns raw names in
+        order of first appearance, deduplicated.
+
+        Matching is done on WORD BOUNDARIES, not a naive substring check -
+        a naive `"ppl" in "analyze apple"` would wrongly match "PPL Corp"
+        inside "Apple". A minimum normalized-name length also guards against
+        very short names matching common words by coincidence.
+        """
         directory = self._load_directory()
-        lowered = text.lower()
         found: list[str] = []
         for row in directory:
             name = row["name"]
             ticker = row.get("ticker")
             short_name = _normalize(name)
-            if (short_name and short_name in lowered) or (ticker and re.search(rf"\b{re.escape(ticker)}\b", text)):
-                if name not in found:
-                    found.append(name)
+            name_match = bool(short_name) and len(short_name) >= 3 and re.search(
+                rf"\b{re.escape(short_name)}\b", text, re.IGNORECASE
+            )
+            ticker_match = bool(ticker) and re.search(rf"\b{re.escape(ticker)}\b", text)
+            if (name_match or ticker_match) and name not in found:
+                found.append(name)
         return found
 
     @staticmethod

@@ -9,6 +9,7 @@ score, up to max_followup_iterations] -> Report -> persist everything.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -44,12 +45,44 @@ class ResearchOrchestrator:
         self.followup_research = FollowupResearch()
 
     def run(self, query: str) -> ResearchRun:
+        """Fully synchronous end-to-end run - blocks until the whole
+        pipeline finishes. Used by tests/scripts. The API layer uses
+        start_async() instead so an HTTP request doesn't block for the
+        several minutes a paced, fully-real run can take (see PRD risk
+        5.1.3 and app/llm/rate_limiter.py) - the frontend polls
+        GET /research/{id} for live status instead."""
         run = ResearchRun(query=query, status=ResearchStatus.PLANNING)
         repo.save_research_run(self.db, run)
         logger.info("research_run_id=%s started query=%r", run.research_run_id, query)
+        return self._execute(run)
 
+    def start_async(self, query: str) -> ResearchRun:
+        """Creates and persists the ResearchRun immediately (status=PENDING)
+        and continues the actual pipeline in a background thread with its
+        own DB session, so the caller gets a response - and a research_run_id
+        to poll - right away instead of blocking on the full run."""
+        run = ResearchRun(query=query, status=ResearchStatus.PENDING)
+        repo.save_research_run(self.db, run)
+        logger.info("research_run_id=%s queued query=%r", run.research_run_id, query)
+
+        def _worker() -> None:
+            from app.storage.database import get_session
+
+            bg_db = get_session()
+            try:
+                ResearchOrchestrator(bg_db)._execute(run)
+            except Exception:  # noqa: BLE001
+                logger.exception("research_run_id=%s background execution crashed", run.research_run_id)
+            finally:
+                bg_db.close()
+
+        threading.Thread(target=_worker, daemon=True, name=f"research-{run.research_run_id}").start()
+        return run
+
+    def _execute(self, run: ResearchRun) -> ResearchRun:
         try:
-            plan = self.query_planner.plan(query)
+            self._touch(run, ResearchStatus.PLANNING)
+            plan = self.query_planner.plan(run.query)
             run.plan = plan
             self._touch(run, ResearchStatus.RETRIEVING)
 
@@ -150,9 +183,12 @@ class ResearchOrchestrator:
 
     def _verify_and_score(self, claims: list[Claim], sources: list[Source]) -> dict[str, VerificationResult]:
         sources_by_id = {s.source_id: s for s in sources}
+        # verify_all batches entailment LLM calls across claims instead of
+        # one call per claim - see VerificationEngine.verify_all /
+        # EntailmentChecker.check_batch.
+        results = self.verification_engine.verify_all(claims)
         verifications: dict[str, VerificationResult] = {}
-        for claim in claims:
-            result = self.verification_engine.verify(claim)
+        for claim, result in zip(claims, results):
             verifications[claim.claim_id] = result
             claim.verification_status = result.final_verdict
             claim.verification_reason = result.combined_reason

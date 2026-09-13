@@ -83,3 +83,26 @@ def test_followup_loop_stops_at_research_query_budget(db_session, monkeypatch):
     run = orchestrator.run("Analyze Apple Q3 2024")
 
     assert run.research_queries_used <= 5 + 1  # small slack: one batch may slightly exceed before the check
+
+
+def test_coverage_summary_reports_best_verdict_per_metric():
+    """The sufficiency prompt is built from a per-metric coverage summary
+    rather than every claim. A metric with any SUPPORTED claim must report
+    supported even when other claims for it were insufficient."""
+    from app.agents.followup_research import _coverage_summary
+
+    claims = [
+        _claim("revenue", VerificationVerdict.INSUFFICIENT),
+        _claim("revenue", VerificationVerdict.SUPPORTED),
+        _claim("net_income", VerificationVerdict.INSUFFICIENT),
+    ]
+    summary = _coverage_summary(claims)
+
+    assert "revenue: best_verdict=supported (2 claim(s))" in summary
+    assert "net_income: best_verdict=insufficient (1 claim(s))" in summary
+
+
+def test_coverage_summary_handles_no_claims():
+    from app.agents.followup_research import _coverage_summary
+
+    assert "no claims" in _coverage_summary([]).lower()

@@ -31,6 +31,30 @@ type Tab = "overview" | "financials" | "risks" | "findings" | "claims" | "confli
 type ClaimFilter = "all" | "supported" | "contradicted" | "insufficient";
 
 const examples = ["Analyze Apple Q3 2024", "Microsoft FY2024 revenue and risks", "Analyze NVIDIA revenue and profitability", "Compare Apple and Microsoft"];
+const POLL_INTERVAL_MS = 1500;
+const MAX_CONSECUTIVE_POLL_ERRORS = 5;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const formatElapsed = (seconds: number) =>
+  seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+
+const STAGE_ORDER = ["pending", "planning", "retrieving", "extracting", "verifying", "followup", "complete"];
+const STAGE_COPY: Record<string, { title: string; detail: string }> = {
+  pending: { title: "Queued", detail: "Your request is starting up." },
+  planning: { title: "Planning the research", detail: "Identifying the company and drafting targeted sub-queries." },
+  retrieving: { title: "Retrieving sources", detail: "Pulling filings, financial data, and coverage from live sources." },
+  extracting: { title: "Extracting claims", detail: "Reading each source for factual and financial statements." },
+  verifying: { title: "Verifying evidence", detail: "Checking every claim against its source, independently." },
+  followup: { title: "Following up on gaps", detail: "Evidence was insufficient somewhere - running a targeted extra search." },
+};
+
+function stageState(step: string, currentStatus: string): "done" | "active" | "upcoming" {
+  if (currentStatus === "followup") return step === "verifying" ? "active" : STAGE_ORDER.indexOf(step) < STAGE_ORDER.indexOf("verifying") ? "done" : "upcoming";
+  const stepIdx = STAGE_ORDER.indexOf(step);
+  const currentIdx = STAGE_ORDER.indexOf(currentStatus);
+  if (currentIdx > stepIdx) return "done";
+  if (currentIdx === stepIdx) return "active";
+  return "upcoming";
+}
 const tabs: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "financials", label: "Financials", icon: BarChart3 },
@@ -75,12 +99,34 @@ function App() {
     if (!trimmed || loading) return;
     setQuery(trimmed); setLoading(true); setError(""); setRun(null); setReport(null); setClaims([]); setSources([]); setConflicts([]);
     try {
+      // The pipeline runs in the background on the server - this call
+      // returns immediately with status="pending" and a run id. We poll
+      // for live status instead of blocking on one long request, so the
+      // UI can show real progress (and never silently hangs on a
+      // multi-minute real-data run).
       const startedRun = await api.startResearch(trimmed);
-      const nextRun = await api.research(startedRun.research_run_id);
-      setRun(nextRun);
-      if (nextRun.status === "failed") throw new Error(nextRun.error || "Research run failed.");
+      setRun(startedRun);
+
+      // A real run can poll for several minutes, so a single transient
+      // network blip must not discard an otherwise-successful run. Only
+      // give up after several consecutive failures.
+      let current = startedRun;
+      let consecutivePollErrors = 0;
+      while (current.status !== "complete" && current.status !== "failed") {
+        await sleep(POLL_INTERVAL_MS);
+        try {
+          current = await api.research(startedRun.research_run_id);
+          consecutivePollErrors = 0;
+          setRun(current);
+        } catch (pollError) {
+          consecutivePollErrors += 1;
+          if (consecutivePollErrors >= MAX_CONSECUTIVE_POLL_ERRORS) throw pollError;
+        }
+      }
+
+      if (current.status === "failed") throw new Error(current.error || "Research run failed.");
       const [nextClaims, nextSources, nextConflicts, nextReport] = await Promise.all([
-        api.claims(nextRun.research_run_id), api.sources(nextRun.research_run_id), api.conflicts(nextRun.research_run_id), api.report(nextRun.research_run_id),
+        api.claims(current.research_run_id), api.sources(current.research_run_id), api.conflicts(current.research_run_id), api.report(current.research_run_id),
       ]);
       setClaims(nextClaims); setSources(nextSources); setConflicts(nextConflicts); setReport(nextReport); setActiveTab("overview");
     } catch (cause) {
@@ -98,15 +144,15 @@ function App() {
       <div className="brand"><div className="logo-mark"><span /><span /><span /></div><div className="brand-copy"><strong>lattice<span>.</span></strong><small>research intelligence</small></div></div>
       <div className="workspace-switcher"><div className="workspace-avatar">F</div><div><strong>Financial Research</strong><small>Evidence workspace</small></div><ChevronDown size={15} /></div>
       <div className="sidebar-section"><span className="nav-label">Workspace</span><button className="nav-item active" type="button"><LayoutDashboard size={17} /><span>Research desk</span></button><button className="nav-item" type="button" onClick={() => setActiveTab("sources")}><BookOpen size={17} /><span>Source library</span></button><button className="nav-item" type="button" onClick={() => setActiveTab("claims")}><ShieldCheck size={17} /><span>Verified claims</span>{claims.length > 0 && <em>{claims.length}</em>}</button></div>
-      <div className="sidebar-section sidebar-lower"><span className="nav-label">System</span><button className="nav-item" type="button" onClick={() => api.health().then(setHealth).catch(() => undefined)}><RefreshCw size={17} /><span>Provider status</span></button><button className="nav-item" type="button" onClick={() => setCollapsed(!collapsed)}><PanelLeftClose size={17} /><span>Collapse sidebar</span></button></div>
-      <div className="sidebar-footer"><div className="footer-status"><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /><span>{health?.demo_mode ? "Demo mode" : "Live providers"}</span></div><small>{health ? `${health.llm_provider} · ${health.search_provider}` : "Checking providers…"}</small></div>
+      <div className="sidebar-section sidebar-lower"><span className="nav-label">System</span><button className="nav-item" type="button" onClick={() => api.health().then(setHealth).catch(() => undefined)}><RefreshCw size={17} /><span>System status</span></button><button className="nav-item" type="button" onClick={() => setCollapsed(!collapsed)}><PanelLeftClose size={17} /><span>Collapse sidebar</span></button></div>
+      <div className="sidebar-footer"><div className="footer-status"><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /><span>{health?.demo_mode ? "Demo mode" : "Connected"}</span></div><small>{health ? (health.demo_mode ? "Synthetic sources" : "Live data sources") : "Checking status…"}</small></div>
     </aside>
     <main className={`main ${collapsed ? "expanded" : ""}`}>
-      <header className="topbar"><button type="button" className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>Research workspace</span><ChevronRight size={14} /><strong>Desk</strong></div><div className="topbar-meta"><span><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /> {health?.demo_mode ? "Demo data clearly labelled" : "Live provider mode"}</span><div className="top-avatar">FR</div></div></header>
+      <header className="topbar"><button type="button" className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>Research workspace</span><ChevronRight size={14} /><strong>Desk</strong></div><div className="topbar-meta"><span><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /> {health?.demo_mode ? "Demo data clearly labelled" : "Live data connected"}</span><div className="top-avatar">FR</div></div></header>
       <div className="content-shell">
         <section className="hero"><div><div className="hero-kicker"><Sparkles size={14} /> VERIFIED FINANCIAL INTELLIGENCE</div><h1>Research desk</h1><p>Ask a question. Trace every answer back to evidence.</p></div><div className="hero-note"><ShieldCheck size={17} /><span>Every factual claim is independently verified against its source.</span></div></section>
-        <section className="query-panel"><div className="query-label"><Search size={15} /><label htmlFor="research-query">Company or research query</label><kbd>ENTER</kbd></div><div className="query-row"><input id="research-query" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && runResearch()} placeholder="e.g. Analyze Apple Q3 2024" disabled={loading} /><Button variant="primary" onClick={() => runResearch()} disabled={loading}>{loading ? <><LoaderCircle size={15} className="spin" /> Running</> : <><Send size={15} /> Run research</>}</Button></div><div className="example-chips">{examples.map((example) => <button type="button" key={example} onClick={() => runResearch(example)} disabled={loading}>{example}</button>)}</div>{health && <div className={`mode-banner ${health.demo_mode ? "demo" : "live"}`}><StatusDot tone={health.demo_mode ? "amber" : "teal"} /><span>{health.demo_mode ? "Demo mode: sources are synthetic and explicitly labelled." : `Live mode: ${health.llm_provider} + ${health.search_provider} providers available.`}</span></div>}</section>
-        {loading && <LoadingState />}
+        <section className="query-panel"><div className="query-label"><Search size={15} /><label htmlFor="research-query">Company or research query</label><kbd>ENTER</kbd></div><div className="query-row"><input id="research-query" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && runResearch()} placeholder="e.g. Analyze Apple Q3 2024" disabled={loading} /><Button variant="primary" onClick={() => runResearch()} disabled={loading}>{loading ? <><LoaderCircle size={15} className="spin" /> Running</> : <><Send size={15} /> Run research</>}</Button></div><div className="example-chips">{examples.map((example) => <button type="button" key={example} onClick={() => runResearch(example)} disabled={loading}>{example}</button>)}</div>{health && <div className={`mode-banner ${health.demo_mode ? "demo" : "live"}`}><StatusDot tone={health.demo_mode ? "amber" : "teal"} /><span>{health.demo_mode ? "Demo mode: sources are synthetic and explicitly labelled." : "Live mode: connected to real filings, financial data, and web sources."}</span></div>}</section>
+        {loading && <LoadingState run={run} />}
         {error && <div className="error-panel"><AlertTriangle size={18} /><div><strong>Research could not be completed</strong><span>{error}</span></div><button type="button" onClick={() => setError("")} aria-label="Dismiss error"><X size={16} /></button></div>}
         {run && report && <ResearchResults company={company} run={run} report={report} claims={claims} sources={sources} conflicts={conflicts} activeTab={activeTab} setActiveTab={setActiveTab} claimFilter={claimFilter} setClaimFilter={setClaimFilter} filteredClaims={filteredClaims} />}
         {!run && !loading && !error && <EmptyState onSelect={(example) => runResearch(example)} />}
@@ -115,8 +161,41 @@ function App() {
   </div>;
 }
 
-function LoadingState() {
-  return <section className="loading-state"><div className="loading-orbit"><LoaderCircle size={22} className="spin" /></div><div><strong>Building your verified research brief</strong><p>Planning queries, retrieving sources, extracting claims, and checking evidence.</p></div><div className="loading-steps"><span>Plan</span><span>Retrieve</span><span>Verify</span><span>Report</span></div></section>;
+function LoadingState({ run }: { run: ResearchRun | null }) {
+  const status = run?.status ?? "pending";
+  const copy = STAGE_COPY[status] ?? STAGE_COPY.pending;
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const steps: { id: string; label: string }[] = [
+    { id: "planning", label: "Plan" },
+    { id: "retrieving", label: "Retrieve" },
+    { id: "extracting", label: "Extract" },
+    { id: "verifying", label: "Verify" },
+  ];
+
+  return (
+    <section className="loading-state">
+      <div className="loading-orbit"><LoaderCircle size={22} className="spin" /></div>
+      <div>
+        <strong>{copy.title}</strong>
+        <p>{copy.detail}</p>
+      </div>
+      <div className="loading-steps">
+        {steps.map((step) => (
+          <span key={step.id} className={stageState(step.id, status)}>{step.label}</span>
+        ))}
+      </div>
+      <span className="loading-elapsed">
+        {formatElapsed(elapsed)} elapsed · typically 3–5 min — every claim is checked against its source, not guessed
+      </span>
+    </section>
+  );
 }
 
 function EmptyState({ onSelect }: { onSelect: (query: string) => void }) {

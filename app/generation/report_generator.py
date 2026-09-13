@@ -21,7 +21,7 @@ import statistics
 
 from pydantic import BaseModel, Field
 
-from app.llm import LLMProvider, get_llm_provider
+from app.llm import NOT_GIVEN, LLMProvider, get_llm_provider
 from app.schemas import (
     Claim,
     ClaimType,
@@ -58,8 +58,8 @@ evidence was found.
 
 
 class ReportGenerator:
-    def __init__(self, llm: LLMProvider | None = None):
-        self.llm = llm if llm is not None else get_llm_provider()
+    def __init__(self, llm: LLMProvider | None = NOT_GIVEN):
+        self.llm = get_llm_provider() if llm is NOT_GIVEN else llm
 
     def generate(
         self,

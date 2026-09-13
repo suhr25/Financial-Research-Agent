@@ -15,16 +15,28 @@ import re
 
 from pydantic import BaseModel, Field
 
-from app.llm import LLMProvider, get_llm_provider
+from app.llm import NOT_GIVEN, LLMProvider, get_llm_provider
 from app.retrieval.base import make_evidence
 from app.schemas import Basis, Claim, ClaimType, Evidence, ResearchPlan, Source
 
 logger = logging.getLogger("financial_research_agent.extraction.claim_extractor")
 
-MAX_SOURCE_CHARS_FOR_LLM = 8000
+# Token-budget tuning. Under a free-tier per-minute token cap these three
+# constants are what actually determine how long a real run takes, so they
+# are deliberately conservative: financial figures and risk statements
+# cluster near the top of filings/articles, so 3500 chars captures the
+# useful part of almost every source we retrieve.
+MAX_SOURCE_CHARS_FOR_LLM = 3500
+SOURCE_BATCH_SIZE = 3
+# Must leave room for a full batch's worth of JSON claims. Too low and a
+# response gets truncated mid-JSON and is discarded entirely (observed as
+# "Expecting value: line 1 column 1" with an empty completion), which
+# wastes the whole call's token spend - the opposite of the goal.
+MAX_EXTRACTION_COMPLETION_TOKENS = 2600
 
 
 class _ExtractedClaimDraft(BaseModel):
+    source_number: int = Field(default=1, description="Which numbered SOURCE block this claim's evidence came from")
     claim_type: ClaimType
     entity: str
     metric: str
@@ -52,6 +64,15 @@ Extract two kinds of claims:
 - qualitative claims: major risks, strategic changes, management commentary, business
   developments.
 
+IMPORTANT on `period`: the user's originally requested period (given below) is background
+context for what the user is interested in - it is NOT necessarily what this specific source
+document is reporting on. A search result can be about a different fiscal period than the one
+requested (e.g. an older or newer quarter/year). Always set each claim's `period` to the period
+ACTUALLY STATED in or around the evidence text itself (e.g. "fiscal 2026 third quarter",
+"quarter ended June 27, 2026", "Q3 2025") - never default it to the requested period. If the
+source text does not state a period for a given figure, leave `period` null rather than
+guessing the requested one.
+
 For every single claim, `quoted_evidence` MUST be an exact, verbatim, character-for-character
 substring copied from the SOURCE TEXT below (not paraphrased, not summarized) that supports the
 claim - this will be programmatically located in the source text, so it must match exactly.
@@ -60,41 +81,76 @@ If the source contains nothing relevant, return an empty claims list.
 
 
 class ClaimExtractor:
-    def __init__(self, llm: LLMProvider | None = None):
-        self.llm = llm if llm is not None else get_llm_provider()
+    def __init__(self, llm: LLMProvider | None = NOT_GIVEN):
+        self.llm = get_llm_provider() if llm is NOT_GIVEN else llm
 
     def extract(self, research_run_id: str, sources: list[Source], plan: ResearchPlan) -> list[Claim]:
-        claims: list[Claim] = []
-        for source in sources:
-            if self.llm is not None:
-                try:
-                    claims.extend(self._llm_extract(research_run_id, source, plan))
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("LLM claim extraction failed for source=%s (%s); using mock extractor", source.source_id, exc)
-            claims.extend(self._mock_extract(research_run_id, source, plan))
+        """Extracts claims from every source. With an LLM configured, sources
+        are processed in batches (SOURCE_BATCH_SIZE per call) rather than one
+        call per source - measured: one call per source meant ~11 calls x
+        ~3900 tokens for a single run, which under a free-tier per-minute
+        token budget serialised into 6+ minutes of pacing. Batching cuts
+        call count and, more importantly, pays the fixed per-call overhead
+        (system prompt + JSON schema) once per batch instead of once per
+        source."""
+        if self.llm is None:
+            claims: list[Claim] = []
+            for source in sources:
+                claims.extend(self._mock_extract(research_run_id, source, plan))
+            return claims
+
+        claims = []
+        for start in range(0, len(sources), SOURCE_BATCH_SIZE):
+            batch = sources[start : start + SOURCE_BATCH_SIZE]
+            try:
+                claims.extend(self._llm_extract_batch(research_run_id, batch, plan))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "LLM claim extraction failed for %d source(s) (%s); using mock extractor for this batch",
+                    len(batch), exc,
+                )
+                for source in batch:
+                    claims.extend(self._mock_extract(research_run_id, source, plan))
         return claims
 
     # ---- Real path -----------------------------------------------------
 
-    def _llm_extract(self, research_run_id: str, source: Source, plan: ResearchPlan) -> list[Claim]:
+    def _llm_extract_batch(self, research_run_id: str, sources: list[Source], plan: ResearchPlan) -> list[Claim]:
         entities = ", ".join(c.name for c in plan.companies) or "the company/companies mentioned"
-        company_hint = source.metadata.get("company_name")
-        text = source.document_text[:MAX_SOURCE_CHARS_FOR_LLM]
+        blocks = []
+        for i, source in enumerate(sources, start=1):
+            company_hint = source.metadata.get("company_name")
+            text = source.document_text[:MAX_SOURCE_CHARS_FOR_LLM]
+            blocks.append(
+                f"--- SOURCE {i} ---\n"
+                f"TITLE: {source.title}\n"
+                f"PUBLISHER: {source.publisher}\n"
+                + (f"RETRIEVED FOR: {company_hint}\n" if company_hint else "")
+                + f"TEXT:\n{text}\n"
+            )
         user_prompt = (
             f"Companies of interest: {entities}\n"
-            + (f"This specific source was retrieved for: {company_hint}\n" if company_hint else "")
-            + f"Requested period: {plan.period or 'not specified'}\n\n"
-            f"SOURCE TITLE: {source.title}\n"
-            f"SOURCE PUBLISHER: {source.publisher}\n"
-            f"SOURCE TEXT:\n{text}"
+            f"User's originally requested period (context only, do NOT default claims to this - "
+            f"see period instructions above): {plan.period or 'not specified'}\n\n"
+            + "\n".join(blocks)
+            + f"\n\nExtract claims from all {len(sources)} source(s) above. Set `source_number` on every "
+            f"claim to the number of the source its evidence came from, and quote `quoted_evidence` "
+            f"verbatim from THAT source's text only."
         )
         output = self.llm.complete_json(
-            system=EXTRACTOR_SYSTEM_PROMPT, user=user_prompt, schema_model=_ExtractionOutput, max_tokens=3000
+            system=EXTRACTOR_SYSTEM_PROMPT,
+            user=user_prompt,
+            schema_model=_ExtractionOutput,
+            max_tokens=MAX_EXTRACTION_COMPLETION_TOKENS,
         )
 
         claims: list[Claim] = []
         for draft in output.claims:
+            idx = (draft.source_number or 1) - 1
+            if not (0 <= idx < len(sources)):
+                logger.warning("Discarding claim with out-of-range source_number=%s", draft.source_number)
+                continue
+            source = sources[idx]
             evidence = make_evidence(source, draft.quoted_evidence)
             if evidence is None:
                 logger.warning(

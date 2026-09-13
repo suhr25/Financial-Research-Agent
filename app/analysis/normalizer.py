@@ -49,12 +49,21 @@ def normalize_value(value: str, unit: str | None, evidence_text: str) -> tuple[f
     unit_l = (unit or "").strip().lower()
     currency = _detect_currency(evidence_text, unit_l)
 
-    if unit_l in SCALE_FACTORS:
-        magnitude = num * SCALE_FACTORS[unit_l]
+    # Match a scale word anywhere in the unit string, not just an exact
+    # match against the whole string - an LLM-extracted unit can come back
+    # decorated ("billion USD", "USD billions", "$ billion") rather than the
+    # bare word our own mock extractors always produce. Word-boundary regex
+    # (with an optional trailing "s") avoids matching a scale word inside an
+    # unrelated token.
+    scale_key = next(
+        (key for key in SCALE_FACTORS if re.search(rf"\b{key}s?\b", unit_l)), None
+    )
+    if scale_key:
+        magnitude = num * SCALE_FACTORS[scale_key]
         base_unit = currency or "USD"
-        return magnitude, base_unit, f"{unit_l}->{base_unit}"
+        return magnitude, base_unit, f"{scale_key}->{base_unit}"
 
-    if unit_l == "%":
+    if "%" in unit_l or re.search(r"\bpercent(age)?\b", unit_l):
         return num, "%", None
 
     base_unit = currency or (unit_l.upper() if unit_l else None) or "USD"

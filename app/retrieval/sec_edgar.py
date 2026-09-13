@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 
+import re
+
 import httpx
 
 from app.config import get_settings
@@ -20,6 +22,10 @@ from app.retrieval.base import FinancialDataProvider
 from app.schemas import CompanyEntity, Source, SourceTier, SourceType
 
 logger = logging.getLogger("financial_research_agent.retrieval.sec_edgar")
+
+# Entries kept per XBRL concept. Small, because the document is a
+# compact evidence digest for the LLM extractor, not an archive.
+ENTRIES_PER_CONCEPT = 3
 
 COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
@@ -64,21 +70,30 @@ class SECEdgarProvider(FinancialDataProvider):
         facts = data.get("facts", {}).get("us-gaap", {})
 
         lines: list[str] = [f"SEC EDGAR XBRL company facts for {company.name} (CIK {company.cik})."]
+        wanted = _parse_requested_period(period)
         for tag, metric_name in METRIC_TAGS.items():
             tag_data = facts.get(tag)
             if not tag_data:
                 continue
             units = tag_data.get("units", {})
             for unit_name, entries in units.items():
-                # Most recent few filed values for this concept.
-                recent = sorted(entries, key=lambda e: e.get("end", ""), reverse=True)[:4]
-                for entry in recent:
+                # Prefer entries matching the requested fiscal period. The
+                # full companyfacts payload spans many years of every
+                # concept; emitting all of it and letting the extractor
+                # truncate meant the requested quarter could be cut off
+                # entirely, leaving only unrelated annual figures. Ranking
+                # by relevance keeps the asked-for period in the document.
+                ranked = sorted(
+                    entries,
+                    key=lambda e: (0 if _matches_period(e, wanted) else 1, _neg_end(e)),
+                )[:ENTRIES_PER_CONCEPT]
+                for entry in ranked:
                     fp = entry.get("fp", "")
                     fy = entry.get("fy", "")
                     form = entry.get("form", "")
                     end = entry.get("end", "")
                     val = entry.get("val")
-                    period_label = f"{fp}{fy}" if fp and fy else end
+                    period_label = f"{fp} {fy}".strip() if fp and fy else end
                     lines.append(
                         f"{metric_name} ({tag}) = {val} {unit_name} for period ending {end} "
                         f"(fiscal period {period_label}, form {form})."
@@ -122,3 +137,40 @@ class SECEdgarProvider(FinancialDataProvider):
             metadata={"mock": True, "requested_period": period},
         )
         return [source]
+
+
+def _parse_requested_period(period: str | None) -> tuple[str | None, str | None]:
+    """Parses a period label like "Q3 2024" or "FY2024" into an
+    (fp, fy) pair matching SEC XBRL's own fields - fp is "Q1".."Q4" or
+    "FY", fy is the 4-digit fiscal year. Returns (None, None) when no
+    period was requested or it isn't recognisable."""
+    if not period:
+        return None, None
+    text = period.upper().replace("-", " ")
+    year_match = re.search(r"(20\d{2})", text)
+    fy = year_match.group(1) if year_match else None
+    quarter_match = re.search(r"\bQ([1-4])\b", text)
+    if quarter_match:
+        return f"Q{quarter_match.group(1)}", fy
+    if "FY" in text or "ANNUAL" in text or "FULL YEAR" in text:
+        return "FY", fy
+    return None, fy
+
+
+def _matches_period(entry: dict, wanted: tuple[str | None, str | None]) -> bool:
+    fp_wanted, fy_wanted = wanted
+    if not fp_wanted and not fy_wanted:
+        return False
+    if fy_wanted and str(entry.get("fy", "")) != fy_wanted:
+        return False
+    if fp_wanted and str(entry.get("fp", "")).upper() != fp_wanted:
+        return False
+    return True
+
+
+def _neg_end(entry: dict) -> str:
+    """Sort key that orders `end` dates newest-first among equally
+    relevant entries (inverting a string date via its complement keeps the
+    comparison purely lexicographic)."""
+    end = entry.get("end", "")
+    return "".join(chr(255 - ord(ch)) for ch in end)

@@ -41,15 +41,21 @@ def health():
     }
 
 
-@router.post("/research", response_model=ResearchRun)
+@router.post("/research", response_model=ResearchRun, status_code=202)
 def start_research(req: ResearchRequest, db: Session = Depends(db_session)):
+    """Returns immediately with status=PENDING and a research_run_id - the
+    actual pipeline runs in a background thread (see
+    ResearchOrchestrator.start_async). A fully real run with paced LLM
+    calls can take minutes; blocking the HTTP response on that would hang
+    the browser with no feedback and risk a silent timeout. Poll
+    GET /research/{id} for live status until it reaches complete/failed."""
     from app.agents.research_orchestrator import ResearchOrchestrator
 
     orchestrator = ResearchOrchestrator(db)
     try:
-        run = orchestrator.run(req.query)
+        run = orchestrator.start_async(req.query)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Research run failed for query=%r", req.query)
+        logger.exception("Failed to queue research run for query=%r", req.query)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return run
 

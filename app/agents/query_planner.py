@@ -18,7 +18,7 @@ import re
 
 from pydantic import BaseModel, Field
 
-from app.llm import LLMProvider, get_llm_provider
+from app.llm import NOT_GIVEN, LLMProvider, get_llm_provider
 from app.retrieval.company_resolver import CompanyResolver
 from app.schemas import CompanyEntity, ResearchPlan, SourceType, SubQuery
 
@@ -79,8 +79,8 @@ profitability, and risk sub-queries even if not explicitly asked).
 
 
 class QueryPlanner:
-    def __init__(self, llm: LLMProvider | None = None, resolver: CompanyResolver | None = None):
-        self.llm = llm if llm is not None else get_llm_provider()
+    def __init__(self, llm: LLMProvider | None = NOT_GIVEN, resolver: CompanyResolver | None = None):
+        self.llm = get_llm_provider() if llm is NOT_GIVEN else llm
         self.resolver = resolver or CompanyResolver()
 
     def plan(self, query: str) -> ResearchPlan:

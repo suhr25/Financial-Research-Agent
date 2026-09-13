@@ -17,7 +17,7 @@ import logging
 
 from pydantic import BaseModel, Field
 
-from app.llm import LLMProvider, get_llm_provider
+from app.llm import NOT_GIVEN, LLMProvider, get_llm_provider
 from app.schemas import Claim, ResearchPlan, SourceType, SubQuery, VerificationVerdict
 
 logger = logging.getLogger("financial_research_agent.agents.followup_research")
@@ -37,8 +37,9 @@ class _SufficiencyOutput(BaseModel):
 
 
 SUFFICIENCY_SYSTEM_PROMPT = """You are the evidence-sufficiency judge in an agentic financial research pipeline.
-You will be given the original research plan/question and the list of claims extracted so far, each with
-its verification verdict (SUPPORTED / CONTRADICTED / INSUFFICIENT) and confidence.
+You will be given the original research plan/question and a coverage summary of the evidence gathered
+so far - one line per entity/metric showing the BEST verification verdict reached for it
+(SUPPORTED / CONTRADICTED / INSUFFICIENT) and how many claims exist for it.
 
 Decide: is there sufficient SUPPORTED evidence to answer the user's research question? If any explicitly
 requested metric or question has no SUPPORTED claim backing it (i.e. it is missing or only INSUFFICIENT/
@@ -49,8 +50,8 @@ follow-ups for things that already have solid SUPPORTED evidence.
 
 
 class FollowupResearch:
-    def __init__(self, llm: LLMProvider | None = None):
-        self.llm = llm if llm is not None else get_llm_provider()
+    def __init__(self, llm: LLMProvider | None = NOT_GIVEN):
+        self.llm = get_llm_provider() if llm is NOT_GIVEN else llm
 
     def assess(self, plan: ResearchPlan, claims: list[Claim]) -> tuple[bool, list[SubQuery], str]:
         """Returns (sufficient, followup_sub_queries, reasoning)."""
@@ -62,18 +63,12 @@ class FollowupResearch:
         return self._rule_based_assess(plan, claims)
 
     def _llm_assess(self, plan: ResearchPlan, claims: list[Claim]) -> tuple[bool, list[SubQuery], str]:
-        claim_lines = "\n".join(
-            f"- entity={c.entity} metric={c.metric} value={c.value}{c.unit or ''} period={c.period} "
-            f"verdict={c.verification_status.value if c.verification_status else 'unknown'} "
-            f"confidence={c.confidence if c.confidence is not None else 'n/a'}"
-            for c in claims
-        )
         user_prompt = (
             f"RESEARCH QUERY: {plan.raw_query}\n"
             f"Requested metrics: {plan.requested_metrics}\n"
             f"Financial questions: {plan.financial_questions}\n"
             f"Risk questions: {plan.risk_questions}\n\n"
-            f"CLAIMS SO FAR:\n{claim_lines or '(none)'}"
+            f"EVIDENCE COVERAGE SO FAR:\n{_coverage_summary(claims)}"
         )
         output = self.llm.complete_json(
             system=SUFFICIENCY_SYSTEM_PROMPT, user=user_prompt, schema_model=_SufficiencyOutput, max_tokens=800
@@ -114,3 +109,40 @@ class FollowupResearch:
                 )
             )
         return False, sub_queries, f"{len(gaps)} watched metric(s) lack SUPPORTED evidence: {[m for _, m in gaps]}."
+
+
+def _coverage_summary(claims: list[Claim]) -> str:
+    """Collapses the full claim list into one line per (entity, metric)
+    stating the best verdict reached and how many claims support it.
+
+    The sufficiency question is only ever "which metrics still lack solid
+    evidence?", so sending every individual claim was both needlessly
+    verbose and a worse prompt. Measured: the full-claim version produced
+    a ~6,800-token request - nearly an entire minute's token budget on a
+    free tier - for a question answerable from a summary a fraction of
+    that size.
+    """
+    if not claims:
+        return "(no claims extracted yet)"
+
+    _RANK = {
+        VerificationVerdict.SUPPORTED: 3,
+        VerificationVerdict.CONTRADICTED: 2,
+        VerificationVerdict.INSUFFICIENT: 1,
+    }
+    best: dict[tuple[str, str], tuple[int, str, int]] = {}
+    for c in claims:
+        key = (c.entity, c.metric)
+        rank = _RANK.get(c.verification_status, 0)
+        verdict = c.verification_status.value if c.verification_status else "unknown"
+        prev = best.get(key)
+        if prev is None:
+            best[key] = (rank, verdict, 1)
+        else:
+            count = prev[2] + 1
+            best[key] = (prev[0], prev[1], count) if prev[0] >= rank else (rank, verdict, count)
+
+    return "\n".join(
+        f"- {entity} / {metric}: best_verdict={verdict} ({count} claim(s))"
+        for (entity, metric), (_rank, verdict, count) in sorted(best.items())
+    )

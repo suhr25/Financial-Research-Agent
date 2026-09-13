@@ -21,7 +21,7 @@ def get_llm_provider() -> LLMProvider | None:
     if settings.effective_demo_mode:
         return None
 
-    key = (settings.llm_provider, settings.anthropic_api_key, settings.openai_api_key)
+    key = (settings.llm_provider, settings.anthropic_api_key, settings.openai_api_key, settings.groq_api_key)
     if _cached_provider is not None and _cache_key == key:
         return _cached_provider
 
@@ -29,12 +29,16 @@ def get_llm_provider() -> LLMProvider | None:
         from app.llm.claude_provider import ClaudeProvider
 
         _cached_provider = ClaudeProvider(settings)
+    elif settings.llm_provider == "groq" and settings.groq_api_key:
+        from app.llm.groq_provider import GroqProvider
+
+        _cached_provider = GroqProvider(settings)
     elif settings.llm_provider == "openai" and settings.openai_api_key:
         from app.llm.openai_provider import OpenAIProvider
 
         _cached_provider = OpenAIProvider(settings)
     else:
-        logger.warning("LLM provider %s selected but no API key configured; falling back to mock heuristics")
+        logger.warning("LLM provider %s selected but no API key configured; falling back to mock heuristics", settings.llm_provider)
         return None
 
     _cache_key = key

@@ -23,11 +23,19 @@ class Settings(BaseSettings):
     demo_mode: bool = True
 
     # LLM
-    llm_provider: Literal["claude", "openai"] = "claude"
+    llm_provider: Literal["claude", "openai", "groq"] = "claude"
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-sonnet-5"
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
+    groq_api_key: str | None = None
+    groq_model: str = "groq/compound-mini"
+    # Optional tokens-per-minute pacing budget for whichever provider is
+    # active (see app/llm/rate_limiter.py). None = no pacing, fire calls as
+    # ready (fine for a paid/high-limit account). Set this below your
+    # provider's actual TPM cap to trade latency for every call succeeding
+    # instead of racing the limit and falling back to mock under load.
+    llm_tpm_limit: int | None = None
 
     # Search
     search_provider: Literal["tavily", "serpapi"] = "tavily"
@@ -55,6 +63,8 @@ class Settings(BaseSettings):
     def llm_available(self) -> bool:
         if self.llm_provider == "claude":
             return bool(self.anthropic_api_key)
+        if self.llm_provider == "groq":
+            return bool(self.groq_api_key)
         return bool(self.openai_api_key)
 
     @property
