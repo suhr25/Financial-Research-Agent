@@ -8,9 +8,34 @@ summary in place of the source text.
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
+from app.config import get_settings
 from app.schemas import CompanyEntity, Evidence, Source
+
+logger = logging.getLogger("financial_research_agent.retrieval")
+
+
+def mock_fallback_allowed(provider_name: str, reason: str) -> bool:
+    """Whether a provider may substitute mock data after a live call fails.
+
+    Allowed only in DEMO_MODE, where synthetic sources are the entire
+    point and are clearly labelled as such. In a live run it is NOT
+    allowed: the mock fixtures carry generic illustrative figures, so
+    injecting one after (say) a yfinance failure put Apple's revenue into
+    a Microsoft research run under a company-named title. A live run is
+    better off with one fewer source than with a fabricated one - the
+    report, conflict detection and confidence scoring all then reflect
+    what was genuinely retrievable.
+    """
+    if get_settings().effective_demo_mode:
+        return True
+    logger.warning(
+        "%s unavailable in live mode (%s); returning no sources rather than substituting mock data",
+        provider_name, reason,
+    )
+    return False
 
 
 class SearchProvider(ABC):

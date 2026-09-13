@@ -9,7 +9,7 @@ import logging
 import httpx
 
 from app.config import get_settings
-from app.retrieval.base import FinancialDataProvider
+from app.retrieval.base import FinancialDataProvider, mock_fallback_allowed
 from app.schemas import CompanyEntity, Source, SourceTier, SourceType
 
 logger = logging.getLogger("financial_research_agent.retrieval.financial_data")
@@ -88,6 +88,9 @@ class YFinanceProvider(FinancialDataProvider):
 
     def fetch(self, company: CompanyEntity, period: str | None) -> list[Source]:
         if not self.is_available() or not company.ticker:
+            reason = "no ticker resolved" if not company.ticker else "provider disabled"
+            if not mock_fallback_allowed("yfinance", reason):
+                return []
             return MockFinancialDataProvider().fetch(company, period)
         try:
             import yfinance as yf
@@ -125,7 +128,9 @@ class YFinanceProvider(FinancialDataProvider):
             )
             return [source]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("yfinance fetch failed for %s (%s); falling back to mock", company.name, exc)
+            logger.warning("yfinance fetch failed for %s (%s)", company.name, exc)
+            if not mock_fallback_allowed("yfinance", str(exc)):
+                return []
             return MockFinancialDataProvider().fetch(company, period)
 
 

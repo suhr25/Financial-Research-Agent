@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import get_settings
-from app.retrieval.base import SearchProvider
+from app.retrieval.base import SearchProvider, mock_fallback_allowed
 from app.schemas import Source, SourceTier, SourceType
 
 logger = logging.getLogger("financial_research_agent.retrieval.web_search")
@@ -49,6 +49,8 @@ class TavilyProvider(SearchProvider):
 
     def search(self, query: str, max_results: int = 5) -> list[Source]:
         if not self.is_available():
+            if not mock_fallback_allowed("Tavily", "no API key configured"):
+                return []
             return MockSearchProvider().search(query, max_results)
         try:
             resp = httpx.post(
@@ -82,7 +84,9 @@ class TavilyProvider(SearchProvider):
                 )
             return sources
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Tavily search failed for %r (%s); falling back to mock", query, exc)
+            logger.warning("Tavily search failed for %r (%s)", query, exc)
+            if not mock_fallback_allowed("Tavily", str(exc)):
+                return []
             return MockSearchProvider().search(query, max_results)
 
 
@@ -97,6 +101,8 @@ class SerpAPIProvider(SearchProvider):
 
     def search(self, query: str, max_results: int = 5) -> list[Source]:
         if not self.is_available():
+            if not mock_fallback_allowed("SerpAPI", "no API key configured"):
+                return []
             return MockSearchProvider().search(query, max_results)
         try:
             resp = httpx.get(
@@ -125,7 +131,9 @@ class SerpAPIProvider(SearchProvider):
                 )
             return sources
         except Exception as exc:  # noqa: BLE001
-            logger.warning("SerpAPI search failed for %r (%s); falling back to mock", query, exc)
+            logger.warning("SerpAPI search failed for %r (%s)", query, exc)
+            if not mock_fallback_allowed("SerpAPI", str(exc)):
+                return []
             return MockSearchProvider().search(query, max_results)
 
 

@@ -18,7 +18,7 @@ import re
 import httpx
 
 from app.config import get_settings
-from app.retrieval.base import FinancialDataProvider
+from app.retrieval.base import FinancialDataProvider, mock_fallback_allowed
 from app.schemas import CompanyEntity, Source, SourceTier, SourceType
 
 logger = logging.getLogger("financial_research_agent.retrieval.sec_edgar")
@@ -52,11 +52,19 @@ class SECEdgarProvider(FinancialDataProvider):
 
     def fetch(self, company: CompanyEntity, period: str | None) -> list[Source]:
         if not self.is_available() or not company.cik:
+            # A company with no CIK simply isn't an SEC registrant (e.g. a
+            # non-US listing) - in a live run that's a real absence of
+            # evidence, not something to paper over with a fixture.
+            reason = "company has no SEC CIK" if not company.cik else "provider disabled"
+            if not mock_fallback_allowed("SEC EDGAR", reason):
+                return []
             return self._mock_fetch(company, period)
         try:
             return self._live_fetch(company, period)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("SEC EDGAR live fetch failed for %s (%s); falling back to mock", company.name, exc)
+            logger.warning("SEC EDGAR live fetch failed for %s (%s)", company.name, exc)
+            if not mock_fallback_allowed("SEC EDGAR", str(exc)):
+                return []
             return self._mock_fetch(company, period)
 
     def _live_fetch(self, company: CompanyEntity, period: str | None) -> list[Source]:
