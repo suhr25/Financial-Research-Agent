@@ -21,15 +21,11 @@ def get_llm_provider() -> LLMProvider | None:
     if settings.effective_demo_mode:
         return None
 
-    key = (settings.llm_provider, settings.anthropic_api_key, settings.openai_api_key, settings.groq_api_key)
+    key = (settings.llm_provider, settings.openai_api_key, settings.groq_api_key)
     if _cached_provider is not None and _cache_key == key:
         return _cached_provider
 
-    if settings.llm_provider == "claude" and settings.anthropic_api_key:
-        from app.llm.claude_provider import ClaudeProvider
-
-        _cached_provider = ClaudeProvider(settings)
-    elif settings.llm_provider == "groq" and settings.groq_api_key:
+    if settings.llm_provider == "groq" and settings.groq_api_key:
         from app.llm.groq_provider import GroqProvider
 
         _cached_provider = GroqProvider(settings)

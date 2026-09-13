@@ -66,7 +66,7 @@ storage layer with distinct `source` / `claim` / `evidence` / `verification_resu
 ## 3. Technology Stack
 
 - **Python 3.11+**, FastAPI, Pydantic v2
-- **LLM**: Claude (`anthropic` SDK), OpenAI, or Groq - behind a swappable `LLMProvider`,
+- **LLM**: Groq or OpenAI - behind a swappable `LLMProvider`,
   with optional tokens-per-minute pacing for rate-limited free tiers
 - **Web search**: Tavily or SerpAPI, behind a swappable `SearchProvider`
 - **Financial data**: SEC EDGAR (XBRL company facts, no key required) as the primary-filing
@@ -82,9 +82,8 @@ Every external integration sits behind an adapter interface so a provider can be
 
 ```
 LLMProvider          SearchProvider         FinancialDataProvider
-  |- ClaudeProvider     |- TavilyProvider      |- AlphaVantageProvider
+  |- GroqProvider       |- TavilyProvider      |- AlphaVantageProvider
   |- OpenAIProvider     |- SerpAPIProvider     |- YFinanceProvider
-  |- GroqProvider       |                      |
   (mock: see below)     |- MockSearchProvider  |- MockFinancialDataProvider
                                                 (SEC EDGAR handled separately, primary-filing tier)
 ```
@@ -102,7 +101,7 @@ financial-research-agent/
 │   ├── analysis/                 # normalizer, conflict_detector, confidence_scorer
 │   ├── generation/report_generator.py
 │   ├── storage/                  # database, models, repositories
-│   ├── llm/                      # LLMProvider + Claude/OpenAI implementations
+│   ├── llm/                      # LLMProvider + Groq/OpenAI implementations
 │   ├── schemas/                  # canonical Pydantic models
 │   └── config.py
 ├── frontend/                     # index.html, style.css, app.js,React 18 + TypeScript + Vite
@@ -134,8 +133,8 @@ See `.env.example` for the full list. Key ones:
 | Variable | Purpose |
 |---|---|
 | `DEMO_MODE` | `true` forces deterministic mock providers everywhere (default) |
-| `LLM_PROVIDER` | `claude`, `openai`, or `groq` |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GROQ_API_KEY` | LLM credentials |
+| `LLM_PROVIDER` | `groq` or `openai` |
+| `GROQ_API_KEY` / `OPENAI_API_KEY` | LLM credentials |
 | `LLM_TPM_LIMIT` | Optional tokens-per-minute budget; paces LLM calls instead of hitting 429s |
 | `SEARCH_PROVIDER` | `tavily` or `serpapi` |
 | `TAVILY_API_KEY` / `SERPAPI_API_KEY` | Web search credentials |

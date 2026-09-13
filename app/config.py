@@ -23,9 +23,7 @@ class Settings(BaseSettings):
     demo_mode: bool = True
 
     # LLM
-    llm_provider: Literal["claude", "openai", "groq"] = "claude"
-    anthropic_api_key: str | None = None
-    anthropic_model: str = "claude-sonnet-5"
+    llm_provider: Literal["openai", "groq"] = "groq"
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
     groq_api_key: str | None = None
@@ -61,8 +59,6 @@ class Settings(BaseSettings):
 
     @property
     def llm_available(self) -> bool:
-        if self.llm_provider == "claude":
-            return bool(self.anthropic_api_key)
         if self.llm_provider == "groq":
             return bool(self.groq_api_key)
         return bool(self.openai_api_key)

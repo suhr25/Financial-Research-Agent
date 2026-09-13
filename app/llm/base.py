@@ -1,7 +1,7 @@
 """LLM provider abstraction.
 
 This is the ONLY place agent modules should talk to an LLM API. It is
-intentionally a "real LLM" abstraction only - Claude and OpenAI - with no
+intentionally a "real LLM" abstraction only - Groq and OpenAI - with no
 mock branch inside it. Mock/DEMO_MODE behaviour lives at the call-site
 (QueryPlanner, ClaimExtractor, EntailmentChecker, ReportGenerator etc. each
 implement their own deterministic heuristic fallback) so that "the LLM was
