@@ -38,8 +38,17 @@ logger = logging.getLogger("financial_research_agent.generation.report_generator
 
 FINANCIAL_PERFORMANCE_METRICS = {
     "revenue", "net_income", "operating_income", "operating_margin",
-    "profit_margin", "ebitda", "revenue_growth_yoy",
+    "profit_margin", "ebitda", "revenue_growth_yoy", "eps",
 }
+
+
+def _is_financial_metric(metric: str) -> bool:
+    """Substring match, because extracted metric names vary by source:
+    Alpha Vantage yields "revenue_ttm", SEC XBRL can yield a raw tag like
+    "revenuefromcontractwithcustomerexcludingassessedtax". An exact-set
+    test silently dropped both from the report."""
+    key = metric.strip().lower()
+    return any(core.replace("_", "") in key.replace("_", "") for core in FINANCIAL_PERFORMANCE_METRICS)
 
 
 class _OverviewOutput(BaseModel):
@@ -79,8 +88,8 @@ class ReportGenerator:
             research_run_id=research_run_id,
             company_summary=company_summary,
             executive_overview=self._build_overview(company_summary, supported),
-            financial_performance=self._build_financial_performance(supported),
-            key_metrics=self._build_key_metrics(supported),
+            financial_performance=self._build_financial_performance(claims),
+            key_metrics=self._build_key_metrics(claims),
             risks=self._build_risks(supported),
             important_findings=self._build_important_findings(contradicted, insufficient),
             conflicting_information=self._build_conflicts_section(conflicts),
@@ -156,19 +165,37 @@ class ReportGenerator:
 
     # ---- Deterministic templated sections ---------------------------------
 
-    def _build_financial_performance(self, supported: list[Claim]) -> ReportSection:
-        relevant = [c for c in supported if c.claim_type == ClaimType.NUMERIC and c.metric in FINANCIAL_PERFORMANCE_METRICS]
+    def _build_financial_performance(self, all_claims: list[Claim]) -> ReportSection:
+        """Reports every numeric financial figure that was extracted and
+        checked, annotated with its verdict - not only the SUPPORTED ones.
+
+        Showing only supported claims meant a run whose figures all came
+        back INSUFFICIENT (e.g. TTM data retrieved for a quarterly
+        question) rendered an empty "no figures were found" section, which
+        reads as a broken feature rather than the real finding: the
+        numbers were retrieved, but could not be tied to the requested
+        period. The verdict is shown alongside each figure so nothing here
+        is mistaken for verified fact.
+        """
+        relevant = [
+            c for c in all_claims
+            if c.claim_type == ClaimType.NUMERIC and _is_financial_metric(c.metric)
+        ]
         best = _best_per_metric(relevant)
         if not best:
-            return ReportSection(title="Financial Performance", content="No verified financial performance figures were found.", claim_ids=[])
+            return ReportSection(
+                title="Financial Performance",
+                content="No financial figures were extracted from the retrieved sources.",
+                claim_ids=[],
+            )
         lines = [f"- {_format_claim_line(c)}" for c in best]
         return ReportSection(title="Financial Performance", content="\n".join(lines), claim_ids=[c.claim_id for c in best])
 
-    def _build_key_metrics(self, supported: list[Claim]) -> ReportSection:
-        numeric = [c for c in supported if c.claim_type == ClaimType.NUMERIC]
+    def _build_key_metrics(self, all_claims: list[Claim]) -> ReportSection:
+        numeric = [c for c in all_claims if c.claim_type == ClaimType.NUMERIC]
         best = _best_per_metric(numeric)
         if not best:
-            return ReportSection(title="Key Metrics", content="No verified numeric metrics were found.", claim_ids=[])
+            return ReportSection(title="Key Metrics", content="No numeric metrics were extracted.", claim_ids=[])
         lines = [f"- {_format_claim_line(c)}" for c in best]
         return ReportSection(title="Key Metrics", content="\n".join(lines), claim_ids=[c.claim_id for c in best])
 
@@ -273,11 +300,90 @@ def _best_per_metric(claims: list[Claim]) -> list[Claim]:
     return list(best.values())
 
 
+_METRIC_LABELS = {
+    "revenue": "Revenue",
+    "annual_revenue": "Annual revenue",
+    "revenue_ttm": "Revenue (TTM)",
+    "net_income": "Net income",
+    "net_income_ttm": "Net income (TTM)",
+    "operating_income": "Operating income",
+    "operating_margin": "Operating margin",
+    "operating_margin_ttm": "Operating margin (TTM)",
+    "profit_margin": "Profit margin",
+    "average_net_profit_margin": "Net profit margin",
+    "ebitda": "EBITDA",
+    "eps_diluted": "Diluted EPS",
+    "revenue_growth_yoy": "Revenue growth (YoY)",
+    "cash_and_equivalents": "Cash & equivalents",
+    "total_debt": "Total debt",
+    "long_term_debt": "Long-term debt",
+    "market_cap": "Market cap",
+    "pe_ratio": "P/E ratio",
+    "risk_factor": "Risk factor",
+}
+
+
+def humanize_metric(metric: str) -> str:
+    """Turns an internal metric key (or a raw XBRL tag the extractor may
+    emit, e.g. 'revenuefromcontractwithcustomerexcludingassessedtax') into
+    a label fit for a report."""
+    key = metric.strip().lower()
+    if key in _METRIC_LABELS:
+        return _METRIC_LABELS[key]
+    # Raw XBRL concept names arrive lowercased and unseparated; map the
+    # common ones by substring rather than shipping the tag to the reader.
+    for needle, label in (
+        ("revenuefromcontract", "Revenue"),
+        ("netincome", "Net income"),
+        ("operatingincome", "Operating income"),
+        ("earningspershare", "Diluted EPS"),
+        ("cashandcash", "Cash & equivalents"),
+        ("longtermdebt", "Long-term debt"),
+    ):
+        if needle in key:
+            return label
+    return metric.replace("_", " ").strip().capitalize()
+
+
+def humanize_value(c: Claim) -> str:
+    """Renders a claim's value the way a financial report would, rather
+    than as the raw magnitude the source happened to use (e.g.
+    '466822988000' -> '$466.82B', '0.326' -> '32.6%')."""
+    unit = (c.unit or "").strip()
+    raw = str(c.value).strip()
+
+    magnitude = c.normalized.magnitude if c.normalized else None
+    base_unit = (c.normalized.base_unit if c.normalized else None) or ""
+
+    if base_unit == "%" or unit == "%" or "margin" in c.metric.lower() or "growth" in c.metric.lower():
+        try:
+            pct = float(raw.rstrip("%"))
+        except ValueError:
+            return raw
+        # Sources express ratios either as 0.326 or as 32.6.
+        if abs(pct) <= 1:
+            pct *= 100
+        return f"{pct:.1f}%"
+
+    if magnitude is None:
+        return f"{raw} {unit}".strip()
+
+    currency = "$" if base_unit in ("USD", "") else ("₹" if base_unit == "INR" else "")
+    absmag = abs(magnitude)
+    for cutoff, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if absmag >= cutoff:
+            return f"{currency}{magnitude / cutoff:,.2f}{suffix}"
+    return f"{currency}{magnitude:,.2f}"
+
+
 def _format_claim_line(c: Claim) -> str:
     period = f" ({c.period})" if c.period else ""
-    conf = f" - confidence {c.confidence * 100:.0f}%" if c.confidence is not None else ""
+    conf = f" - {c.confidence * 100:.0f}% confidence" if c.confidence is not None else ""
     basis = f" [{c.basis.value}]" if c.basis.value != "unknown" else ""
-    return f"{c.metric}: {c.value} {c.unit or ''}{period}{basis}{conf}".strip()
+    status = ""
+    if c.verification_status and c.verification_status != VerificationVerdict.SUPPORTED:
+        status = f" [{c.verification_status.value.upper()}]"
+    return f"{humanize_metric(c.metric)}: {humanize_value(c)}{period}{basis}{status}{conf}".strip()
 
 
 def _avg_confidence(claims: list[Claim]) -> float | None:

@@ -49,6 +49,12 @@ export interface Claim {
   basis?: string | null;
   source_id: string;
   evidence_span: EvidenceSpan;
+  normalized?: {
+    magnitude?: number | null;
+    base_unit?: string | null;
+    period_type?: string | null;
+    basis?: string | null;
+  } | null;
   verification_status?: "supported" | "contradicted" | "insufficient" | string | null;
   verification_reason?: string | null;
   confidence?: number | null;

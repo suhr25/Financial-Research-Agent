@@ -203,10 +203,106 @@ function EmptyState({ onSelect }: { onSelect: (query: string) => void }) {
 }
 
 function ResearchResults({ company, run, report, claims, sources, conflicts, activeTab, setActiveTab, claimFilter, setClaimFilter, filteredClaims }: { company: string; run: ResearchRun; report: Report; claims: Claim[]; sources: Source[]; conflicts: Conflict[]; activeTab: Tab; setActiveTab: (tab: Tab) => void; claimFilter: ClaimFilter; setClaimFilter: (filter: ClaimFilter) => void; filteredClaims: Claim[] }) {
-  return <section className="results"><div className="results-heading"><div><div className="company-line"><span className="company-monogram">{company.slice(0, 1).toUpperCase()}</span><span>{company}</span><StatusDot /></div><h2>Verified research brief</h2><p>{run.plan?.period || "Period not specified"} · completed {new Date(run.updated_at).toLocaleString()}</p></div><div className="result-actions"><span className="complete-status"><Check size={14} /> {run.status}</span><span className="run-id"><Clock3 size={13} /> {run.research_run_id}</span></div></div><div className="metrics-strip"><Metric label="Sources" value={String(sources.length)} detail="documents retrieved" /><Metric label="Claims" value={String(report.total_claims)} detail="extracted and checked" /><Metric label="Avg. confidence" value={report.average_confidence != null ? `${Math.round(report.average_confidence * 100)}%` : "—"} detail="weighted verification" tone="positive" /><Metric label="Conflicts" value={String(conflicts.length)} detail={conflicts.length ? "review recommended" : "none detected"} tone={conflicts.length ? "negative" : "neutral"} /></div><nav className="tabs" aria-label="Research result sections">{tabs.map(({ id, label, icon: Icon }) => <button type="button" key={id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}><Icon size={15} />{label}{id === "claims" && claims.length > 0 && <em>{claims.length}</em>}{id === "conflicts" && conflicts.length > 0 && <em>{conflicts.length}</em>}</button>)}</nav><div className="result-panel">{activeTab === "overview" && <OverviewTab report={report} />}{activeTab === "financials" && <ReportText title="Financial performance" section={report.financial_performance} />}{activeTab === "risks" && <ReportText title="Risks" section={report.risks} />}{activeTab === "findings" && <ReportText title="Important findings" section={report.important_findings} />}{activeTab === "claims" && <ClaimsTab claims={filteredClaims} filter={claimFilter} setFilter={setClaimFilter} sources={sources} />}{activeTab === "conflicts" && <ConflictsTab conflicts={conflicts} />}{activeTab === "sources" && <SourcesTab sources={sources} />}</div></section>;
+  return <section className="results"><div className="results-heading"><div><div className="company-line"><span className="company-monogram">{company.slice(0, 1).toUpperCase()}</span><span>{company}</span><StatusDot /></div><h2>Verified research brief</h2><p>{run.plan?.period || "Period not specified"} · completed {new Date(run.updated_at).toLocaleString()}</p></div><div className="result-actions"><span className="complete-status"><Check size={14} /> {run.status}</span><span className="run-id"><Clock3 size={13} /> {run.research_run_id}</span></div></div><div className="metrics-strip"><Metric label="Sources" value={String(sources.length)} detail="documents retrieved" /><Metric label="Claims" value={String(report.total_claims)} detail="extracted and checked" /><Metric label="Avg. confidence" value={report.average_confidence != null ? `${Math.round(report.average_confidence * 100)}%` : "—"} detail="weighted verification" tone="positive" /><Metric label="Conflicts" value={String(conflicts.length)} detail={conflicts.length ? "review recommended" : "none detected"} tone={conflicts.length ? "negative" : "neutral"} /></div><nav className="tabs" aria-label="Research result sections">{tabs.map(({ id, label, icon: Icon }) => <button type="button" key={id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}><Icon size={15} />{label}{id === "claims" && claims.length > 0 && <em>{claims.length}</em>}{id === "conflicts" && conflicts.length > 0 && <em>{conflicts.length}</em>}</button>)}</nav><div className="result-panel">{activeTab === "overview" && <OverviewTab report={report} />}{activeTab === "financials" && <FinancialsTab claims={claims} section={report.financial_performance} />}{activeTab === "risks" && <ReportText title="Risks" section={report.risks} />}{activeTab === "findings" && <ReportText title="Important findings" section={report.important_findings} />}{activeTab === "claims" && <ClaimsTab claims={filteredClaims} filter={claimFilter} setFilter={setClaimFilter} sources={sources} />}{activeTab === "conflicts" && <ConflictsTab conflicts={conflicts} />}{activeTab === "sources" && <SourcesTab sources={sources} />}</div></section>;
 }
 
 function OverviewTab({ report }: { report: Report }) { return <div className="overview-content"><ReportText title="Executive overview" section={report.executive_overview} /><div className="verification-callout"><ShieldCheck size={19} /><div><strong>Claim verification summary</strong><p>{report.claim_verification_summary.content}</p><div className="verdicts"><span className="supported">{report.supported_claims} supported</span><span className="contradicted">{report.contradicted_claims} contradicted</span><span className="insufficient">{report.insufficient_claims} insufficient</span></div></div></div>{report.comparison_tables?.map((table) => <div className="comparison-block" key={table.title}><div className="section-title"><span className="eyebrow">Comparison</span><h3>{table.title}</h3></div><DataTable columns={table.columns} rows={table.rows} /></div>)}</div>; }
+const METRIC_LABELS: Record<string, string> = {
+  revenue: "Revenue", annual_revenue: "Annual revenue", revenue_ttm: "Revenue (TTM)",
+  net_income: "Net income", net_income_ttm: "Net income (TTM)", operating_income: "Operating income",
+  operating_margin: "Operating margin", operating_margin_ttm: "Operating margin (TTM)",
+  profit_margin: "Profit margin", average_net_profit_margin: "Net profit margin",
+  ebitda: "EBITDA", eps_diluted: "Diluted EPS", revenue_growth_yoy: "Revenue growth (YoY)",
+  cash_and_equivalents: "Cash & equivalents", total_debt: "Total debt", long_term_debt: "Long-term debt",
+  market_cap: "Market cap", pe_ratio: "P/E ratio",
+};
+
+/** Mirrors the backend's humanize_metric: raw XBRL tags are unreadable in a report. */
+function metricLabel(metric: string): string {
+  const key = metric.trim().toLowerCase();
+  if (METRIC_LABELS[key]) return METRIC_LABELS[key];
+  const fuzzy: [string, string][] = [
+    ["revenuefromcontract", "Revenue"], ["netincome", "Net income"], ["operatingincome", "Operating income"],
+    ["earningspershare", "Diluted EPS"], ["cashandcash", "Cash & equivalents"], ["longtermdebt", "Long-term debt"],
+  ];
+  for (const [needle, label] of fuzzy) if (key.includes(needle)) return label;
+  const spaced = metric.replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/** Renders 466822988000 as $466.82B and 0.326 as 32.6%. */
+function metricValue(claim: Claim): string {
+  const isPercent = claim.normalized?.base_unit === "%" || claim.unit === "%"
+    || /margin|growth/i.test(claim.metric);
+  const raw = String(claim.value).trim();
+  if (isPercent) {
+    const n = parseFloat(raw.replace("%", ""));
+    if (Number.isNaN(n)) return raw;
+    return `${(Math.abs(n) <= 1 ? n * 100 : n).toFixed(1)}%`;
+  }
+  const mag = claim.normalized?.magnitude;
+  if (mag == null) return `${raw}${claim.unit ? ` ${claim.unit}` : ""}`;
+  const base = claim.normalized?.base_unit ?? "";
+  const sym = base === "INR" ? "₹" : base === "USD" || base === "" ? "$" : "";
+  const abs = Math.abs(mag);
+  for (const [cut, sfx] of [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]] as [number, string][]) {
+    if (abs >= cut) return `${sym}${(mag / cut).toFixed(2)}${sfx}`;
+  }
+  return `${sym}${mag.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+const FINANCIAL_KEYS = ["revenue", "netincome", "operatingincome", "operatingmargin", "profitmargin", "ebitda", "revenuegrowth", "eps", "cash", "debt", "marketcap", "peratio"];
+
+function FinancialsTab({ claims, section }: { claims: Claim[]; section: { content: string; claim_ids: string[] } }) {
+  // Keep the strongest verdict per metric so one figure isn't listed many times.
+  const rank = (s?: string | null) => (s === "supported" ? 3 : s === "contradicted" ? 2 : s === "insufficient" ? 1 : 0);
+  const financial = claims.filter((c) => {
+    if (c.claim_type !== "numeric") return false;
+    const k = c.metric.toLowerCase().replace(/_/g, "");
+    return FINANCIAL_KEYS.some((core) => k.includes(core));
+  });
+  const best = new Map<string, Claim>();
+  for (const c of financial) {
+    const key = metricLabel(c.metric);
+    const prev = best.get(key);
+    if (!prev || rank(c.verification_status) > rank(prev.verification_status) || (rank(c.verification_status) === rank(prev.verification_status) && (c.confidence ?? 0) > (prev.confidence ?? 0))) {
+      best.set(key, c);
+    }
+  }
+  const rows = [...best.values()].sort((a, b) => rank(b.verification_status) - rank(a.verification_status) || (b.confidence ?? 0) - (a.confidence ?? 0));
+
+  if (rows.length === 0) {
+    return <article className="report-text">
+      <div className="section-title"><span className="eyebrow">Verified report section</span><h3>Financial performance</h3></div>
+      <div className="empty-inline"><BarChart3 size={17} />{section.content || "No financial figures were extracted from the retrieved sources."}</div>
+    </article>;
+  }
+
+  return <article className="report-text">
+    <div className="section-title"><span className="eyebrow">Verified report section</span><h3>Financial performance</h3></div>
+    <div className="fin-grid">
+      {rows.map((c) => (
+        <div className={`fin-card ${c.verification_status || "insufficient"}`} key={c.claim_id}>
+          <span className="fin-metric">{metricLabel(c.metric)}</span>
+          <strong className="fin-value">{metricValue(c)}</strong>
+          <div className="fin-meta">
+            {c.period && <span className="fin-period">{c.period}</span>}
+            {c.basis && c.basis !== "unknown" && <span className="fin-basis">{c.basis.replace(/_/g, "-")}</span>}
+          </div>
+          <div className="fin-foot">
+            <span className={`verdict ${c.verification_status || "insufficient"}`}>{c.verification_status || "unverified"}</span>
+            {c.confidence != null && <span className="fin-conf">{Math.round(c.confidence * 100)}% confidence</span>}
+          </div>
+        </div>
+      ))}
+    </div>
+    <p className="fin-note">
+      Every figure above is shown with the verdict its own source evidence produced. Figures marked
+      <strong> insufficient</strong> were retrieved but could not be tied to the requested period — they are not verified facts.
+    </p>
+  </article>;
+}
+
 function ReportText({ title, section }: { title: string; section: { title: string; content: string; claim_ids: string[] } }) { return <article className="report-text"><div className="section-title"><span className="eyebrow">Verified report section</span><h3>{title}</h3></div><p>{section.content || "Nothing to show."}</p>{section.claim_ids?.length > 0 && <span className="linked-claims"><ShieldCheck size={13} /> {section.claim_ids.length} linked verified claims</span>}</article>; }
 function ClaimsTab({ claims, filter, setFilter, sources }: { claims: Claim[]; filter: ClaimFilter; setFilter: (filter: ClaimFilter) => void; sources: Source[] }) { return <div><div className="panel-heading"><div><span className="eyebrow">Evidence ledger</span><h3>Extracted and verified claims</h3></div><div className="claim-filters">{(["all", "supported", "contradicted", "insufficient"] as ClaimFilter[]).map((item) => <button type="button" key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div></div>{claims.length ? claims.map((claim, index) => <ClaimCard claim={claim} key={claim.claim_id} index={index} sources={sources} />) : <div className="empty-inline"><Filter size={17} />No claims match this filter.</div>}</div>; }
 function ClaimCard({ claim, index, sources }: { claim: Claim; index: number; sources: Source[] }) { const [open, setOpen] = useState(false); const source = sources.find((item) => item.source_id === claim.evidence_span.source_id); const confidence = claim.confidence == null ? null : Math.round(claim.confidence * 100); const breakdown = claim.confidence_breakdown ?? {}; return <article className="claim-card"><div className="claim-head"><div><strong>{claim.statement}</strong><span>{claim.entity} · {claim.metric}{claim.period ? ` · ${claim.period}` : ""}</span></div><span className={`verdict ${claim.verification_status || "insufficient"}`}>{claim.verification_status || "unverified"}</span></div>{confidence != null && <div className="confidence-row"><div><span style={{ width: `${confidence}%` }} /></div><b>{confidence}%</b></div>}<blockquote>“{claim.evidence_span.evidence_text}”</blockquote><div className="claim-source"><span>{source?.source_tier?.replaceAll("_", " ") || "unknown source"}</span><strong>{source?.title || "Unknown source"}</strong>{source?.publisher && <small>{source.publisher}</small>}</div><div className="claim-footer"><span>{claim.verification_reason || "Verification complete."}</span>{claim.confidence_breakdown && <button type="button" onClick={() => setOpen(!open)}>{open ? "Hide" : "Show"} confidence breakdown <ChevronDown size={13} /></button>}</div>{open && <div className="breakdown-grid">{Object.entries(breakdown).map(([key, value]) => <div key={key}><span>{key.replaceAll("_", " ")}</span><strong>{Math.round(value * 100)}%</strong></div>)}</div>}<span className="claim-index">#{index + 1}</span></article>; }

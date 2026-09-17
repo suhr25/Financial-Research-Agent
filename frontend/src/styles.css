@@ -12,3 +12,23 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 .loading-state{flex-wrap:wrap}.loading-steps span{position:relative;transition:background 200ms ease,color 200ms ease}.loading-steps span.done{color:var(--teal-dark);background:var(--teal-pale)}.loading-steps span.active{color:#fff;background:var(--teal);box-shadow:0 0 0 3px rgba(49,175,160,.18)}.loading-steps span.upcoming{color:#a7b6b2;background:#f1f7f4}.loading-elapsed{width:100%;margin-top:2px;padding-left:51px;color:#9aada9;font:500 10px 'DM Mono',monospace}
 @media(max-width:560px){.loading-elapsed{padding-left:0}}
+
+/* Financial performance: metric cards. Values are formatted ($466.82B, 32.6%)
+   and each carries its own verdict, so an unverified figure can never read
+   as a confirmed one. */
+.fin-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(212px,1fr));gap:12px;margin-top:16px}
+.fin-card{position:relative;display:flex;flex-direction:column;gap:6px;padding:15px 16px 13px;border:1px solid #dfeae6;border-left:3px solid #c9d8d3;border-radius:9px;background:#fcfefd;transition:box-shadow 160ms var(--ease),transform 160ms var(--ease)}
+.fin-card:hover{transform:translateY(-1px);box-shadow:0 5px 16px rgba(16,34,43,.07)}
+.fin-card.supported{border-left-color:var(--teal)}
+.fin-card.contradicted{border-left-color:var(--red)}
+.fin-card.insufficient{border-left-color:#d9a441}
+.fin-metric{color:#6f8783;font:500 10px 'DM Mono',monospace;letter-spacing:.05em;text-transform:uppercase}
+.fin-value{font:600 23px 'Space Grotesk',sans-serif;letter-spacing:-.035em;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.15}
+.fin-meta{display:flex;flex-wrap:wrap;gap:6px}
+.fin-period,.fin-basis{padding:2px 7px;border-radius:4px;background:#eef5f2;color:#5f7a75;font:500 9.5px 'DM Mono',monospace}
+.fin-basis{background:#f3eee6;color:#8a6f43}
+.fin-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px;padding-top:9px;border-top:1px solid #eef4f1}
+.fin-conf{color:#8b9b97;font:500 9.5px 'DM Mono',monospace;white-space:nowrap}
+.fin-note{margin-top:15px;padding-top:13px;border-top:1px solid #eef4f1;color:#84928f;font-size:11.5px;line-height:1.6}
+.fin-note strong{color:#946f2c;font-weight:600}
+@media(max-width:560px){.fin-grid{grid-template-columns:1fr}.fin-value{font-size:21px}}
