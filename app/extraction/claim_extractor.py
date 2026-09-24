@@ -16,6 +16,7 @@ import re
 from pydantic import BaseModel, Field
 
 from app.llm import NOT_GIVEN, LLMProvider, get_llm_provider
+from app.rag import retrieve_relevant_text
 from app.retrieval.base import make_evidence
 from app.schemas import Basis, Claim, ClaimType, Evidence, ResearchPlan, Source
 
@@ -33,6 +34,23 @@ SOURCE_BATCH_SIZE = 3
 # "Expecting value: line 1 column 1" with an empty completion), which
 # wastes the whole call's token spend - the opposite of the goal.
 MAX_EXTRACTION_COMPLETION_TOKENS = 2600
+
+
+def _build_rag_query(plan: ResearchPlan) -> str:
+    """Turns a ResearchPlan into the text query used for RAG chunk
+    retrieval - what the LLM extractor should actually be looking for in a
+    long source, rather than "whatever appears first". Falls back to a
+    generic financial-metrics query when the planner didn't extract
+    anything more specific (e.g. the deterministic mock planner)."""
+    parts = [
+        *plan.requested_metrics,
+        *plan.financial_questions,
+        *plan.qualitative_questions,
+        *plan.risk_questions,
+    ]
+    if not parts:
+        parts = ["revenue", "net income", "operating margin", "EBITDA", "risks", "earnings"]
+    return " ".join(parts)
 
 
 class _ExtractedClaimDraft(BaseModel):
@@ -117,10 +135,17 @@ class ClaimExtractor:
 
     def _llm_extract_batch(self, research_run_id: str, sources: list[Source], plan: ResearchPlan) -> list[Claim]:
         entities = ", ".join(c.name for c in plan.companies) or "the company/companies mentioned"
+        rag_query = _build_rag_query(plan)
         blocks = []
         for i, source in enumerate(sources, start=1):
             company_hint = source.metadata.get("company_name")
-            text = source.document_text[:MAX_SOURCE_CHARS_FOR_LLM]
+            # RAG: for a source longer than a plain prefix would sensibly
+            # cover, retrieve the chunks most relevant to what this plan
+            # actually asks about (LangChain RecursiveCharacterTextSplitter
+            # + FAISS + local embeddings - see app/rag/indexer.py) instead
+            # of blindly cutting at MAX_SOURCE_CHARS_FOR_LLM and losing
+            # whatever came after that character.
+            text = retrieve_relevant_text(source.document_text, rag_query, MAX_SOURCE_CHARS_FOR_LLM)
             blocks.append(
                 f"--- SOURCE {i} ---\n"
                 f"TITLE: {source.title}\n"

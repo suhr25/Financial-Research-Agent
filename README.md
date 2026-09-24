@@ -71,6 +71,11 @@ storage layer with distinct `source` / `claim` / `evidence` / `verification_resu
 - **Web search**: Tavily or SerpAPI, behind a swappable `SearchProvider`
 - **Financial data**: SEC EDGAR (XBRL company facts, no key required) as the primary-filing
   source; Alpha Vantage or yfinance as the structured financial-API source
+- **RAG (LangChain)**: long source documents are chunked (`RecursiveCharacterTextSplitter`),
+  embedded locally (`sentence-transformers/all-MiniLM-L6-v2`, no API key/network call) and
+  indexed in an ephemeral per-source FAISS store; the Claim Extractor retrieves the chunks
+  most relevant to what the research plan actually asked about instead of a fixed-prefix cut
+  — see `app/rag/indexer.py` and section 4 below
 - **Storage**: SQLite (via SQLAlchemy), with a repository layer separating sources / claims /
   evidence / verification results / conflicts / research runs / reports
 - **Frontend**: React 18 + TypeScript + Vite, served from the FastAPI app's built `frontend/dist` bundle
@@ -88,7 +93,66 @@ LLMProvider          SearchProvider         FinancialDataProvider
                                                 (SEC EDGAR handled separately, primary-filing tier)
 ```
 
-## 4. Project Structure
+## 4. Retrieval-Augmented Generation
+
+RAG is used specifically for **claim extraction from long source documents**, not as a
+general architecture change. The problem it replaces: the Claim Extractor previously fed
+the LLM the first ~3,500 characters of a source and silently discarded the rest - a filing
+that discusses revenue early and risk factors later would never have its risk factors read
+at all.
+
+```
+Source document (may be long)
+        v
+RecursiveCharacterTextSplitter (LangChain) - 600-char chunks, 80-char overlap,
+        v                                     add_start_index=True so every chunk's
+                                                offset in the original text is known
+Local embeddings (sentence-transformers/all-MiniLM-L6-v2 via langchain-huggingface)
+        v                                     - no API key, no network call, doesn't
+                                                share the LLM's rate-limited token budget
+Ephemeral per-source FAISS index (langchain-community)
+        v
+similarity_search(query, k=6)  - query is built from the research plan's
+        v                        requested_metrics / financial_questions / risk_questions,
+                                  so retrieval is relevance-ranked against what THIS query
+                                  actually asked about, not a generic summary
+Top-k chunks, selected by similarity rank, then re-sorted into original
+document order for a coherent excerpt
+        v
+Fed to the Claim Extractor's LLM prompt in place of a fixed-prefix slice
+```
+
+**Why LangChain here specifically, and not elsewhere in the pipeline:** LangChain owns the
+parts it is actually built for - text splitting, embeddings, and vector search. Claim
+generation and verification deliberately do **not** go through LangChain's LLM wrappers;
+they use this project's own `LLMProvider` abstraction (`app/llm/`), because that is what
+provides the guarantees the rest of the system depends on - strict Pydantic-validated
+structured output, the token-bucket rate limiter with usage reconciliation (`app/llm/
+rate_limiter.py`), and the retry/fallback-to-mock behaviour every extraction and
+verification call relies on. Routing generation through a different framework's call path
+would mean re-deriving all of that. This is a targeted integration, not a wholesale one -
+and it is more defensible in that form: LangChain does what only it is well-suited for, and
+nothing here duplicates infrastructure that already existed and was already tested.
+
+**Evidence integrity is unaffected.** Retrieved chunks are exact, contiguous substrings of
+`source.document_text` - `add_start_index=True` is what makes that provable, and it is
+covered directly by `tests/test_rag_indexer.py::
+test_retrieved_text_pieces_are_verbatim_substrings_of_the_source`. The Claim Extractor's
+existing rule that a claim's quoted evidence must be located verbatim in the source
+(`make_evidence`, see section 10 of the extractor's docstring) runs completely unchanged
+against RAG-selected text - RAG changes what the model is shown, never how a claim's
+evidence is checked afterwards.
+
+**Scope, deliberately narrow.** The FAISS index is built fresh per source, per extraction
+call, and discarded immediately after - it is not a persistent corpus, and chunking is
+skipped entirely for a source short enough to already fit in one extraction call (`app/rag/
+indexer.py:RAG_CHUNK_THRESHOLD`, 1,500 characters), so the (real, one-time-per-process)
+embedding-model load cost is only paid when it buys something. If the RAG stack is
+unavailable or a chunking/embedding call fails for any reason, extraction falls back to the
+previous prefix-truncation behaviour rather than failing the whole pipeline
+(`tests/test_rag_indexer.py::test_rag_failure_falls_back_to_prefix_truncation`).
+
+## 5. Project Structure
 
 ```
 financial-research-agent/
@@ -102,6 +166,7 @@ financial-research-agent/
 │   ├── generation/report_generator.py
 │   ├── storage/                  # database, models, repositories
 │   ├── llm/                      # LLMProvider + Groq/OpenAI implementations
+│   ├── rag/                      # LangChain chunking/embeddings/FAISS retrieval (see section 4)
 │   ├── schemas/                  # canonical Pydantic models
 │   └── config.py
 ├── frontend/                     # index.html, style.css, app.js,React 18 + TypeScript + Vite
@@ -113,7 +178,7 @@ financial-research-agent/
 └── .env.example
 ```
 
-## 5. Setup
+## 6. Setup
 
 ```bash
 cd financial-research-agent
@@ -124,7 +189,12 @@ pip install -r requirements.txt
 copy .env.example .env        # Windows: copy, macOS/Linux: cp
 ```
 
-The app runs **without any API keys** in DEMO_MODE (the default) - see section 8.
+`requirements.txt` includes the RAG stack (`sentence-transformers` + `torch`), so first
+install is a larger download (roughly 600MB-1GB) than a typical FastAPI project - a one-time
+cost. The embedding model itself (~90MB) downloads once on first use and is cached locally
+by HuggingFace afterwards; every run after that is fully offline for the RAG step.
+
+The app runs **without any API keys** in DEMO_MODE (the default) - see section 9.
 
 ### Environment Variables
 
@@ -142,7 +212,7 @@ See `.env.example` for the full list. Key ones:
 | `SEC_EDGAR_USER_AGENT` | Required by SEC's fair-access policy for EDGAR requests |
 | `MAX_FOLLOWUP_ITERATIONS`, `MAX_RESEARCH_QUERIES` | Bounds on the follow-up research loop. Each extra iteration re-runs retrieval + extraction + verification, so `0` keeps runs fastest on a rate-limited tier |
 
-## 6. Running Locally
+## 7. Running Locally
 
 ```bash
 cd frontend
@@ -164,7 +234,7 @@ npm run dev
 
 The Vite dev server proxies `/api` requests to `http://localhost:8000`.
 
-## 7. Running with Docker
+## 8. Running with Docker
 
 ```bash
 copy .env.example .env   # edit in real API keys if you have them, otherwise leave as-is
@@ -174,7 +244,7 @@ docker compose up --build
 The app is available at `http://localhost:8000`. The SQLite database persists in `./data`
 via a bind mount.
 
-## 8. Demo Mode
+## 9. Demo Mode
 
 `DEMO_MODE=true` (the default, and the automatic fallback whenever no LLM key is configured)
 makes every provider use a deterministic, clearly-labelled mock implementation instead of a
@@ -194,7 +264,7 @@ switches to its live implementation automatically (with mock as a safety-net fal
 live call fails, so one flaky API doesn't take down the whole run - the resulting source is
 still tagged with its provider's normal tier, since it succeeded).
 
-## 9. API
+## 10. API
 
 | Endpoint | Description |
 |---|---|
@@ -220,7 +290,7 @@ The system is **company-agnostic**: company names are resolved dynamically via
 bundled sample directory in demo mode) - there is no `if company == "Apple"` branching
 anywhere in the codebase.
 
-## 10. Testing
+## 11. Testing
 
 ```bash
 pytest tests/ -v
@@ -232,7 +302,7 @@ scoring, report generation, the bounded follow-up loop, dedicated adversarial ca
 number / wrong unit / wrong period / GAAP vs non-GAAP / quarterly vs annual), and one
 fully-mocked end-to-end test through the real FastAPI app (no live API dependency).
 
-## 11. Evaluation Harness
+## 12. Evaluation Harness
 
 ```bash
 python -m evaluation.run_evaluation
@@ -261,7 +331,7 @@ documented ground truth, not guesses. This makes the harness fully reproducible 
 external annotation effort, at the cost of not being a fully independent validation set - see
 Known Limitations.
 
-## 12. Confidence Scoring Methodology
+## 13. Confidence Scoring Methodology
 
 Confidence is a transparent weighted sum of four independently-computable components
 (`app/analysis/confidence_scorer.py`), never an LLM asked to "grade" its own claim:
@@ -277,7 +347,7 @@ Confidence is a transparent weighted sum of four independently-computable compon
 the underlying fact is true" - a confidently CONTRADICTED claim (a caught error) scores highly
 too, since the system is sure it caught it.
 
-## 13. Retrieval vs Extraction vs Verification vs Conflict Detection vs Confidence Scoring vs Synthesis
+## 14. Retrieval vs Extraction vs Verification vs Conflict Detection vs Confidence Scoring vs Synthesis
 
 These are five genuinely distinct pipeline stages, each with a narrow responsibility -
 important for the viva:
@@ -308,7 +378,7 @@ This is what prevents the "verifier grading its own homework" failure mode expli
 out in the PRD (section 5.1.4) - the entailment checker is given only a claim and its raw
 evidence text, with no report context at all.
 
-## 14. Known Limitations
+## 15. Known Limitations
 
 - **Mock-mode data is generic**: in `DEMO_MODE`, mock financial figures are the same
   illustrative numbers regardless of which company was requested (no real API is being
@@ -320,7 +390,7 @@ evidence text, with no report context at all.
   INSUFFICIENT (a text-overlap heuristic can't reliably detect semantic negation/contradiction
   without an LLM). With a real LLM key configured, the entailment prompt does support
   qualitative CONTRADICTED verdicts.
-- **The evaluation set is self-constructed** (see section 11) rather than independently
+- **The evaluation set is self-constructed** (see section 12) rather than independently
   annotated; a 100% score on it demonstrates internal consistency and guards against
   regressions, not generalization to arbitrary unseen real-world text.
 - **No FX conversion**: claims in different currencies (e.g. USD vs INR) are correctly
@@ -336,7 +406,7 @@ evidence text, with no report context at all.
   more heavily on web search results, which the system surfaces transparently as fewer
   sources rather than failing.
 
-## 15. Observability
+## 16. Observability
 
 Every stage logs through Python's standard `logging` module under the `financial_research_agent.*`
 logger hierarchy (configured in `app/main.py`, level via `LOG_LEVEL`): each research run's start
@@ -350,7 +420,7 @@ project the log-based approach above already gives the same operational visibili
 logger boundaries above are exactly where OTel spans would be added first if this were
 deployed as a real service.
 
-## 16. Milestone Checklist (against the PRD)
+## 17. Milestone Checklist (against the PRD)
 
 | PRD Requirement | Status |
 |---|---|

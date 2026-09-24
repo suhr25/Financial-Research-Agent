@@ -121,6 +121,14 @@ class SECEdgarProvider(FinancialDataProvider):
 
     def _mock_fetch(self, company: CompanyEntity, period: str | None) -> list[Source]:
         period_label = period or "the most recent reported quarter"
+        # Deliberately long and multi-section (Overview / MD&A / Segment
+        # results / Risk Factors / Outlook), not just the four headline
+        # figures - a real 10-Q reads like this, and it gives the RAG
+        # chunk-retrieval layer (app/rag/indexer.py) genuine material to
+        # select from in demo mode too, rather than only ever exercising
+        # that code path against live filings. The headline paragraph is
+        # left first and unchanged so the existing regex-based mock
+        # extractor (used when no LLM is configured) still finds it.
         document_text = (
             f"[MOCK SEC FILING DATA - DEMO MODE, NOT A REAL SEC FILING]\n\n"
             f"{company.name} periodic filing excerpt for {period_label}.\n\n"
@@ -129,11 +137,36 @@ class SECEdgarProvider(FinancialDataProvider):
             f"Net income was $21.4 billion for {period_label}, representing a diluted earnings per share of $1.40.\n"
             f"Operating margin was approximately 29.6% on a GAAP basis for {period_label}.\n"
             f"Cash and cash equivalents totaled $28.4 billion as of the end of {period_label}.\n\n"
+            f"Management's Discussion and Analysis: Revenue growth for {period_label} was driven primarily by "
+            f"continued strength in the Services segment and steady demand for flagship hardware products in "
+            f"developed markets, partially offset by softer demand in certain emerging markets and unfavorable "
+            f"foreign currency movements relative to the prior-year period. Gross margin expanded modestly due "
+            f"to a favorable product mix and disciplined cost management across the supply chain.\n\n"
+            f"Segment Results: The Americas segment reported net sales growth of approximately 4% year over "
+            f"year, while Europe grew approximately 3%. Greater China net sales declined slightly amid "
+            f"macroeconomic headwinds and intensifying local competition. The Services segment, which includes "
+            f"subscription and platform revenue, grew approximately 12% year over year and carries a "
+            f"significantly higher gross margin than the Products segment.\n\n"
+            f"Liquidity and Capital Resources: The Company believes its existing cash, cash equivalents, "
+            f"marketable securities, and cash generated from operations will be sufficient to satisfy its "
+            f"working capital, capital expenditure, and debt service requirements for at least the next twelve "
+            f"months. The Company returned capital to shareholders during {period_label} through share "
+            f"repurchases and dividend payments.\n\n"
             f"Risk Factors: The Company's business, reputation, and results of operations could be materially "
             f"adversely affected by global and regional economic conditions, including inflation, changes in "
             f"interest rates, and currency fluctuations. The Company also faces substantial competition in all "
             f"of the markets in which it operates, and this competition could result in reduced margins and "
-            f"loss of market share.\n"
+            f"loss of market share. The Company's business is subject to risks associated with its complex, "
+            f"multi-tiered global supply chain, including component shortages, single-source suppliers, and "
+            f"geopolitical disruptions that could affect the Company's ability to manufacture and deliver "
+            f"products on time. The Company is also subject to increasing regulatory scrutiny and evolving "
+            f"data-privacy, antitrust, and digital-markets legislation in multiple jurisdictions, compliance "
+            f"with which could increase operating costs or restrict elements of the Company's business model. "
+            f"Cybersecurity incidents affecting the Company or its business partners could result in the loss "
+            f"of confidential information, disruption to operations, and reputational harm.\n\n"
+            f"Outlook: Management expects continued investment in research and development and in new product "
+            f"categories, and anticipates that macroeconomic uncertainty, currency volatility, and competitive "
+            f"pressure will remain the primary factors affecting results in upcoming periods.\n"
         )
         source = Source(
             title=f"[MOCK] {company.name} Periodic Filing Excerpt - {period_label}",
