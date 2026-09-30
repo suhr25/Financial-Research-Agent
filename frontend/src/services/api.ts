@@ -130,6 +130,8 @@ export interface HealthResponse {
   search_available: boolean;
 }
 
+export const UNAUTHORIZED_EVENT = "verifi:unauthorized";
+
 const BACKEND_DOWN = "Can't reach the backend server. Start it with .\\scripts\\dev.ps1 (port 8000), then retry.";
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -139,8 +141,12 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   } catch {
     throw new Error(BACKEND_DOWN);
   }
-  const data = await response.json().catch(() => null);
+  const data = response.status === 204 ? null : await response.json().catch(() => null);
   if (!response.ok) {
+    // An expired or missing session anywhere in the app sends the user back
+    // to the login page (see main.tsx) - except for the auth calls
+    // themselves, whose 401 is a normal "wrong password" answer.
+    if (response.status === 401 && !url.startsWith("/api/auth/")) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
     if (typeof data?.detail === "string") throw new Error(data.detail);
     // FastAPI always answers with a JSON body. A bodiless 5xx means the Vite
     // dev proxy couldn't reach the backend at all (e.g. it isn't running).
@@ -295,4 +301,47 @@ export const industryApi = {
   list: () => fetchJson<IndustrySummary[]>("/api/industries"),
   snapshot: (id: string, refresh = false) =>
     fetchJson<IndustrySnapshot>(`/api/industries/${id}${refresh ? "?refresh=true" : ""}`),
+};
+
+// ---- Auth & public ------------------------------------------------------------
+
+export interface SessionUser {
+  kind: "user" | "demo";
+  name: string;
+  email?: string | null;
+  expires_at: string;
+}
+
+const postJson = <T,>(url: string, body?: unknown) =>
+  fetchJson<T>(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+
+export const authApi = {
+  me: () => fetchJson<SessionUser>("/api/auth/me"),
+  login: (email: string, password: string) => postJson<SessionUser>("/api/auth/login", { email, password }),
+  signup: (name: string, email: string, password: string) => postJson<SessionUser>("/api/auth/signup", { name, email, password }),
+  demo: () => postJson<SessionUser>("/api/auth/demo"),
+  logout: () => postJson<null>("/api/auth/logout"),
+};
+
+export interface OverviewCompany {
+  name: string;
+  short_name: string;
+  nse: string;
+  revenue_ttm?: number | null;
+  latest_quarter?: string | null;
+  quarters_filed: number;
+  verification_status: CheckStatus;
+  checks: { label: string; status: CheckStatus; difference_pct?: number | null }[];
+}
+
+export interface PublicOverview {
+  industry?: string;
+  universe?: string;
+  mode?: "live" | "demo";
+  verified?: number;
+  companies: OverviewCompany[];
+}
+
+export const publicApi = {
+  overview: () => fetchJson<PublicOverview>("/api/public/overview"),
 };

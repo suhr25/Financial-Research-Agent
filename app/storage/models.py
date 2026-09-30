@@ -94,3 +94,29 @@ class ReportORM(Base):
     report_id: Mapped[str] = mapped_column(String, primary_key=True)
     research_run_id: Mapped[str] = mapped_column(String, index=True, unique=True)
     payload: Mapped[dict] = mapped_column(JSON)
+
+
+# ---- Authentication ---------------------------------------------------------
+
+
+class UserORM(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    password_hash: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class SessionORM(Base):
+    """A login session. Only the SHA-256 of the session token is stored, so a
+    leaked database can't be replayed as live cookies."""
+
+    __tablename__ = "sessions"
+
+    token_hash: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String)  # "user" | "demo"
+    user_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)

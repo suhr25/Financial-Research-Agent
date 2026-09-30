@@ -95,6 +95,7 @@ class CompanyMetrics(BaseModel):
 
     price: float | None = None
     price_date: str | None = None
+    previous_close: float | None = None
     shares_outstanding: float | None = None
     market_cap: float | None = None
     revenue_ttm: float | None = None

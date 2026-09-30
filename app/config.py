@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     industry_cache_ttl_seconds: int = 900
     industry_cache_dir: str = str(BASE_DIR / "data" / "industry_cache")
 
+    # Auth (app/auth): session cookie lifetimes. Set SESSION_COOKIE_SECURE=true
+    # when serving over HTTPS so the cookie is never sent in clear text.
+    user_session_days: int = 7
+    demo_session_hours: int = 2
+    session_cookie_secure: bool = False
+
     # App
     app_host: str = "0.0.0.0"
     app_port: int = 8000

@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.industry.service import IndustryService
 from app.industry.universe import list_industries
 from app.schemas import Claim, Conflict, ResearchRun, Source
@@ -29,19 +28,6 @@ def db_session():
 
 class ResearchRequest(BaseModel):
     query: str
-
-
-@router.get("/health")
-def health():
-    settings = get_settings()
-    return {
-        "status": "ok",
-        "demo_mode": settings.effective_demo_mode,
-        "llm_provider": settings.llm_provider,
-        "llm_available": settings.llm_available,
-        "search_provider": settings.search_provider,
-        "search_available": settings.search_available,
-    }
 
 
 @router.get("/industries", response_model=list[IndustrySummary])

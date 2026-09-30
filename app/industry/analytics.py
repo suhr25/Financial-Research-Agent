@@ -148,7 +148,7 @@ def build_company_metrics(
     metrics = CompanyMetrics(name=ref.name, short_name=ref.short_name, symbol=ref.symbol, nse=ref.nse, tier=ref.tier)
     if not filings:
         metrics.available = False
-        metrics.error = "No consolidated results filings found on NSE."
+        metrics.error = "No consolidated results filings found for this company."
         return metrics
 
     latest = filings[0]
@@ -166,6 +166,8 @@ def build_company_metrics(
     if closes:
         metrics.price = closes[-1][1]
         metrics.price_date = price_day.isoformat()
+        if len(closes) > 1:
+            metrics.previous_close = closes[-2][1] / split_factor_after(actions, closes[-2][0], price_day)
     if latest.shares:
         # Paid-up capital / face value is the share count at quarter end;
         # a later bonus or split changes it, so carry those forward.
@@ -234,11 +236,11 @@ def build_company_metrics(
                "Net profit ÷ reported basic EPS gives a share count consistent with the shares in issue during the quarter (within {diff}%).",
                "Net profit ÷ reported basic EPS implies a share count {diff}% away from the shares in issue - usually treasury shares held by an employee trust.",
                "The filing doesn't report enough to recompute EPS."),
-        _check("price", "Closing price matches NSE's end-of-day file",
+        _check("price", "Closing price matches the official end-of-day file",
                metrics.price, bhavcopy_close, 0.05,
-               f"The {metrics.price_date} close agrees with NSE's official bhavcopy (within {{diff}}%).",
-               f"The {metrics.price_date} close differs from NSE's bhavcopy by {{diff}}%.",
-               "NSE's end-of-day file for this date wasn't available to compare."),
+               f"The {metrics.price_date} close agrees with the official end-of-day file (within {{diff}}%).",
+               f"The {metrics.price_date} close differs from the official end-of-day file by {{diff}}%.",
+               "The official end-of-day file for this date wasn't available to compare."),
     ]
     for f in filings:
         for note in f.notes:
@@ -473,7 +475,7 @@ def build_insights(
     out.append(Insight(
         kind="data",
         title=f"{verified} of {len(companies)} companies pass every cross-check",
-        detail=("Quarterly filings were reconciled with each annual report, EPS with profit ÷ shares, and prices with NSE's end-of-day file. "
+        detail=("Quarterly filings were reconciled with each annual report, EPS with profit ÷ shares, and prices with the official end-of-day file. "
                 + (f"Review: {', '.join(mismatched)} - at least one figure disagrees beyond tolerance." if mismatched
                    else "No figure disagreed beyond tolerance.")),
     ))

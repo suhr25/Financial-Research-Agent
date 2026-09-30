@@ -1,4 +1,6 @@
-# Financial Research Agent
+# VeriFi - Every Number Has a Story
+
+*(project: Financial Research Agent)*
 
 An agentic financial research system that retrieves multi-source company data, extracts
 factual claims, **independently verifies every claim against the original source text**,
@@ -93,6 +95,25 @@ LLMProvider          SearchProvider         FinancialDataProvider
   (mock: see below)     |- MockSearchProvider  |- MockFinancialDataProvider
                                                 (SEC EDGAR handled separately, primary-filing tier)
 ```
+
+## Sign-in and Demo Mode
+
+The site opens on a login page (`frontend/src/auth/LoginPage.tsx`). The page also explains
+VeriFi using real data: it traces one company's revenue back to its NSE filings and the checks
+behind it, and shows a live NSE ticker, both served by the public `GET /api/public/overview`.
+
+- **Accounts** (`app/auth/`): email + password. Passwords are hashed with scrypt and a per-user
+  salt. Sessions are random tokens in an HttpOnly, SameSite=Lax cookie, and only their SHA-256
+  is stored. Repeated failed logins are throttled, and a wrong password and an unknown email get
+  the same answer.
+- **Demo mode**: "Explore in demo mode" opens a 2-hour guest session with no account. Guests see
+  the full workspace with the same real data; "demo" means *no account*, never sample data. (The
+  server's `DEMO_MODE` setting is a different thing: it serves an offline NSE snapshot, and the
+  UI labels it "Offline snapshot".)
+- **Enforced server-side**: every research and industry API returns 401 without a session. Only
+  `/api/health`, `/api/public/overview` and `/api/auth/*` are public.
+- Settings: `USER_SESSION_DAYS` (default 7), `DEMO_SESSION_HOURS` (2), `SESSION_COOKIE_SECURE`
+  (set `true` behind HTTPS).
 
 ## Industry Dashboard (NIFTY IT)
 

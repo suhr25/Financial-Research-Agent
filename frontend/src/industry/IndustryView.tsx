@@ -6,6 +6,9 @@ import {
 } from "lucide-react";
 import { industryApi, type CompanyMetrics, type IndustrySnapshot } from "../services/api";
 import { ago, inr, pct, plain, times } from "../lib/format";
+import { useCountUp } from "../lib/motion";
+import { Tabs } from "../components/Tabs";
+import { Carousel } from "../components/Carousel";
 import { CorrelationHeatmap, DotStrip, QuarterBars, ShareBars } from "./charts";
 import { DETAIL_METRICS, METRICS, POSITIONING_METRICS, TABLE_COLUMNS, median, rank, value, type MetricKey } from "./metrics";
 
@@ -97,30 +100,33 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
       {snap.warnings.length > 0 && <div className="warn-strip"><AlertTriangle size={14} /><span>{snap.warnings.join(" · ")}</span></div>}
 
       <section className="kpi-row" aria-label="Industry summary">
-        <Kpi label="Sector market cap" value={inr(snap.concentration.total_market_cap)} detail={`${companies.length} companies · ${snap.concentration.largest} ${pct(snap.concentration.largest_share, 0)}`} />
-        <Kpi label="Median revenue growth" value={pct(agg.revenue_growth_yoy?.median, 1, true)} detail={`range ${pct(agg.revenue_growth_yoy?.min, 0)} to ${pct(agg.revenue_growth_yoy?.max, 0)}`} />
-        <Kpi label="Median operating margin" value={pct(agg.operating_margin?.median)} detail={`${pct(agg.operating_margin?.weighted_mean)} cap-weighted`} />
-        <Kpi label="Median P/E" value={times(agg.pe_trailing?.median)} detail={`${times(agg.pe_trailing?.min)} – ${times(agg.pe_trailing?.max)}`} />
-        <Kpi label="Basket volatility cut" value={pct(div.equal_weight?.volatility_reduction, 0)} detail={`avg correlation ${plain(div.average_pairwise_correlation)}`} />
+        <Kpi label="Sector market cap" num={snap.concentration.total_market_cap} fmt={inr} detail={`${companies.length} companies · ${snap.concentration.largest} ${pct(snap.concentration.largest_share, 0)}`} />
+        <Kpi label="Median revenue growth" num={agg.revenue_growth_yoy?.median} fmt={(v) => pct(v, 1, true)} detail={`range ${pct(agg.revenue_growth_yoy?.min, 0)} to ${pct(agg.revenue_growth_yoy?.max, 0)}`} />
+        <Kpi label="Median operating margin" num={agg.operating_margin?.median} fmt={(v) => pct(v)} detail={`${pct(agg.operating_margin?.weighted_mean)} cap-weighted`} />
+        <Kpi label="Median P/E" num={agg.pe_trailing?.median} fmt={times} detail={`${times(agg.pe_trailing?.min)} – ${times(agg.pe_trailing?.max)}`} />
+        <Kpi label="Basket volatility cut" num={div.equal_weight?.volatility_reduction} fmt={(v) => pct(v, 0)} detail={`avg correlation ${plain(div.average_pairwise_correlation)}`} />
       </section>
 
       <section className="insights" aria-label="Key takeaways">
-        <div className="section-title"><span className="eyebrow">Key takeaways · computed, not generated</span></div>
-        <div className="insight-grid">
-          {snap.insights.map((item) => {
+        <div className="section-title insights-title"><span className="eyebrow">Key takeaways · computed from the data, not generated</span></div>
+        <Carousel label="takeaways" count={snap.insights.length}>
+          {snap.insights.map((item, i) => {
             const Icon = INSIGHT_ICON[item.kind] ?? Sparkles;
-            return <article className={`insight ${item.kind}`} key={item.title}><Icon size={16} /><div><strong>{item.title}</strong><p>{item.detail}</p></div></article>;
+            return (
+              <article className={`insight ${item.kind}`} key={item.title} style={{ ["--i" as string]: i }}>
+                <span className="insight-icon"><Icon size={16} /></span>
+                <div><span className="insight-kind">{item.kind}</span><strong>{item.title}</strong><p>{item.detail}</p></div>
+              </article>
+            );
           })}
-        </div>
+        </Carousel>
       </section>
 
-      <nav className="tabs ind-tabs" aria-label="Industry views">
-        {VIEWS.map(({ id, label, icon: Icon }) => (
-          <button type="button" key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}><Icon size={15} />{label}</button>
-        ))}
-      </nav>
+      <div className="ind-tabs">
+        <Tabs label="Industry views" active={view} onChange={setView} tabs={VIEWS.map(({ id, label, icon: Icon }) => ({ id, label, icon: <Icon size={15} /> }))} />
+      </div>
 
-      <div className="result-panel">
+      <div className="result-panel panel-anim" key={view}>
         {view === "peers" && <PeerTable companies={companies} snap={snap} onSelect={setSelected} selected={selected} />}
         {view === "positioning" && <Positioning companies={companies} selected={selected} onSelect={setSelected} />}
         {view === "concentration" && <ConcentrationPanel snap={snap} companies={companies} selected={selected} onSelect={setSelected} />}
@@ -128,8 +134,8 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
       </div>
 
       <p className="ind-footnote">
-        Source: {snap.source}. Prices as of the NSE close on {snap.price_date ? fmtDate(snap.price_date) : "—"}; financials from each company's
-        latest consolidated results filed with NSE (links in each company's panel). {verified}/{companies.length} companies pass every consistency check.
+        Financials from each company's latest consolidated results filings (links in each company's panel); prices as of the close on {snap.price_date ? fmtDate(snap.price_date) : "—"}.
+        {" "}{verified}/{companies.length} companies pass every consistency check.
         Not investment advice.
       </p>
 
@@ -138,8 +144,10 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
   );
 }
 
-function Kpi({ label, value: v, detail }: { label: string; value: string; detail: string }) {
-  return <div className="metric kpi"><span className="eyebrow">{label}</span><strong>{v}</strong><span className="metric-detail">{detail}</span></div>;
+function Kpi({ label, num, fmt, detail }: { label: string; num?: number | null; fmt: (v: number | null | undefined) => string; detail: string }) {
+  // Counts up to the real value; the final frame is exactly fmt(num).
+  const shown = useCountUp(num ?? null);
+  return <div className="metric kpi"><span className="eyebrow">{label}</span><strong aria-label={fmt(num)}>{fmt(shown)}</strong><span className="metric-detail">{detail}</span></div>;
 }
 
 function IndustrySkeleton() {
@@ -368,7 +376,7 @@ function CompanyPanel({ company: c, companies, snap, onClose, onDeepDive }: { co
       <div className="drawer-overlay" onClick={onClose} />
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={`${c.name} detail`}>
         <header className="drawer-head">
-          <div className="co-cell"><span className="co-mono lg">{c.short_name.slice(0, 2).toUpperCase()}</span><div><strong>{c.name}</strong><small>NSE: {c.nse} · {c.tier} · {inr(c.price)} close{c.price_date ? " " + fmtDate(c.price_date) : ""}</small></div></div>
+          <div className="co-cell"><span className="co-mono lg">{c.short_name.slice(0, 2).toUpperCase()}</span><div><strong>{c.name}</strong><small>{c.nse} · {c.tier} · {inr(c.price)} close{c.price_date ? " " + fmtDate(c.price_date) : ""}</small></div></div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </header>
 
@@ -409,7 +417,7 @@ function CompanyPanel({ company: c, companies, snap, onClose, onDeepDive }: { co
           </section>
 
           <section>
-            <div className="section-title"><span className="eyebrow">Source filings · NSE</span></div>
+            <div className="section-title"><span className="eyebrow">Source filings · the story behind these numbers</span></div>
             <ul className="filing-list">
               {[...c.quarters].reverse().map((q) => (
                 <li key={q.period_end}>

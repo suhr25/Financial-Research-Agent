@@ -41,13 +41,13 @@ def _fetch_company(ref: IndustryCompanyRef, filings_cache: Path):
         filings = nse.fetch_filings(ref.nse, filings_cache)
     except Exception as exc:  # noqa: BLE001
         logger.warning("NSE filings failed for %s (%s)", ref.nse, exc)
-        return ref, [], [], [], f"Results filings unavailable from NSE: {exc}"
+        return ref, [], [], [], f"Results filings unavailable right now: {exc}"
     try:
         closes = nse.fetch_price_history(ref.nse)
         actions = nse.fetch_corporate_actions(ref.nse)
     except Exception as exc:  # noqa: BLE001
         logger.warning("NSE prices failed for %s (%s)", ref.nse, exc)
-        return ref, filings, [], [], f"Prices unavailable from NSE: {exc}"
+        return ref, filings, [], [], f"Prices unavailable right now: {exc}"
     return ref, filings, closes, actions, None
 
 

@@ -8,7 +8,10 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from fastapi import Depends
+
 from app.api.routes import router
+from app.auth.routes import auth_router, public_router, require_session
 from app.config import BASE_DIR, get_settings
 from app.storage.database import init_db
 
@@ -38,7 +41,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Financial Research Agent", version="0.1.0", lifespan=lifespan)
 
-app.include_router(router, prefix="/api")
+app.include_router(public_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+# Research and industry data need a signed-in or demo session.
+app.include_router(router, prefix="/api", dependencies=[Depends(require_session)])
 
 FRONTEND_DIR = BASE_DIR / "frontend" / "dist"
 if not FRONTEND_DIR.exists():

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownRight,
@@ -28,7 +28,11 @@ import {
 } from "lucide-react";
 import { IndustryView } from "./industry/IndustryView";
 import { api, industryApi, type IndustrySummary, type Claim, type Conflict, type HealthResponse, type Report, type ResearchRun, type Source } from "./services/api";
-import "./styles.css";
+import { Sidebar, type NavSection } from "./components/Sidebar";
+import { UserMenu } from "./components/UserMenu";
+import { Tabs } from "./components/Tabs";
+import { Pipeline } from "./research/Pipeline";
+import type { SessionUser } from "./services/api";
 
 type Tab = "overview" | "financials" | "risks" | "findings" | "claims" | "conflicts" | "sources";
 type ClaimFilter = "all" | "supported" | "contradicted" | "insufficient";
@@ -38,27 +42,7 @@ type AppView = { kind: "industry"; id: string } | { kind: "research" };
 const POLL_INTERVAL_MS = 1500;
 const MAX_CONSECUTIVE_POLL_ERRORS = 5;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const formatElapsed = (seconds: number) =>
-  seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 
-const STAGE_ORDER = ["pending", "planning", "retrieving", "extracting", "verifying", "followup", "complete"];
-const STAGE_COPY: Record<string, { title: string; detail: string }> = {
-  pending: { title: "Queued", detail: "Your request is starting up." },
-  planning: { title: "Planning the research", detail: "Identifying the company and drafting targeted sub-queries." },
-  retrieving: { title: "Retrieving sources", detail: "Pulling filings, financial data, and coverage from live sources." },
-  extracting: { title: "Extracting claims", detail: "Reading each source for factual and financial statements." },
-  verifying: { title: "Verifying evidence", detail: "Checking every claim against its source, independently." },
-  followup: { title: "Following up on gaps", detail: "Evidence was insufficient somewhere - running a targeted extra search." },
-};
-
-function stageState(step: string, currentStatus: string): "done" | "active" | "upcoming" {
-  if (currentStatus === "followup") return step === "verifying" ? "active" : STAGE_ORDER.indexOf(step) < STAGE_ORDER.indexOf("verifying") ? "done" : "upcoming";
-  const stepIdx = STAGE_ORDER.indexOf(step);
-  const currentIdx = STAGE_ORDER.indexOf(currentStatus);
-  if (currentIdx > stepIdx) return "done";
-  if (currentIdx === stepIdx) return "active";
-  return "upcoming";
-}
 const tabs: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "financials", label: "Financials", icon: BarChart3 },
@@ -81,7 +65,7 @@ function Metric({ label, value, detail, tone = "neutral" }: { label: string; val
   return <div className="metric"><span className="eyebrow">{label}</span><strong>{value}</strong><span className={`metric-detail ${tone}`}>{tone === "positive" ? <ArrowUpRight size={12} /> : tone === "negative" ? <ArrowDownRight size={12} /> : null}{detail}</span></div>;
 }
 
-function App() {
+function App({ user, onSignOut }: { user: SessionUser; onSignOut: (next?: "signin" | "signup") => void }) {
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<Tab>("overview");
   const [claimFilter, setClaimFilter] = useState<ClaimFilter>("all");
@@ -94,7 +78,11 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("verifi.sidebar") === "collapsed"; } catch { return false; } });
+  const toggleSidebar = useCallback(() => setCollapsed((c) => {
+    try { localStorage.setItem("verifi.sidebar", c ? "expanded" : "collapsed"); } catch { /* storage unavailable */ }
+    return !c;
+  }), []);
   const [industries, setIndustries] = useState<IndustrySummary[]>([]);
   const [appView, setAppView] = useState<AppView>({ kind: "industry", id: "information-technology" });
 
@@ -147,77 +135,48 @@ function App() {
   const company = run?.plan?.companies?.map((item) => item.ticker ? `${item.name} (${item.ticker})` : item.name).join(", ") || run?.plan?.raw_query || "Awaiting research";
   const filteredClaims = useMemo(() => claimFilter === "all" ? claims : claims.filter((claim) => claim.verification_status === claimFilter), [claims, claimFilter]);
   const closeSidebar = () => setSidebarOpen(false);
+  const navSections: NavSection[] = [
+    {
+      label: "Industries",
+      items: industries.map((ind) => ({
+        id: ind.id, label: ind.name, icon: <Layers size={18} />, badge: ind.company_count,
+        active: appView.kind === "industry" && appView.id === ind.id, onSelect: () => go({ kind: "industry", id: ind.id }),
+      })),
+    },
+    {
+      label: "Research",
+      items: [
+        { id: "research", label: "Verified deep dive", icon: <ScanSearch size={18} />, active: appView.kind === "research", badge: loading ? <LoaderCircle size={11} className="spin" /> : undefined, onSelect: () => go({ kind: "research" }) },
+        ...(appView.kind === "research" && report ? [
+          { id: "claims", label: "Verified claims", icon: <ShieldCheck size={16} />, sub: true, badge: claims.length || undefined, onSelect: () => setActiveTab("claims") },
+          { id: "sources", label: "Sources", icon: <BookOpen size={16} />, sub: true, onSelect: () => setActiveTab("sources") },
+        ] : []),
+      ],
+    },
+  ];
 
   return <div className="research-app">
-    <div className={`mobile-overlay ${sidebarOpen ? "show" : ""}`} onClick={closeSidebar} />
-    <aside className={`sidebar ${collapsed ? "collapsed" : ""} ${sidebarOpen ? "mobile-open" : ""}`}>
-      <div className="brand"><div className="logo-mark"><span /><span /><span /></div><div className="brand-copy"><strong>VeriFi<span>.</span></strong><small>research intelligence</small></div></div>
-      <div className="workspace-switcher"><div className="workspace-avatar">F</div><div><strong>Financial Research</strong><small>Evidence workspace</small></div><ChevronDown size={15} /></div>
-      <div className="sidebar-section"><span className="nav-label">Industries</span>{industries.map((ind) => <button key={ind.id} className={`nav-item ${appView.kind === "industry" && appView.id === ind.id ? "active" : ""}`} type="button" onClick={() => go({ kind: "industry", id: ind.id })} title={ind.universe}><Layers size={17} /><span>{ind.name}</span><em>{ind.company_count}</em></button>)}</div>
-      <div className="sidebar-section sidebar-lower"><span className="nav-label">Company research</span><button className={`nav-item ${appView.kind === "research" ? "active" : ""}`} type="button" onClick={() => go({ kind: "research" })}><ScanSearch size={17} /><span>Verified deep dive</span>{loading && <LoaderCircle size={13} className="spin nav-spin" />}</button>{appView.kind === "research" && report && <><button className="nav-item sub" type="button" onClick={() => setActiveTab("sources")}><BookOpen size={17} /><span>Sources</span></button><button className="nav-item sub" type="button" onClick={() => setActiveTab("claims")}><ShieldCheck size={17} /><span>Verified claims</span>{claims.length > 0 && <em>{claims.length}</em>}</button></>}</div>
-      <div className="sidebar-section sidebar-lower"><span className="nav-label">System</span><button className="nav-item" type="button" onClick={() => api.health().then(setHealth).catch(() => undefined)}><RefreshCw size={17} /><span>System status</span></button><button className="nav-item" type="button" onClick={() => setCollapsed(!collapsed)}><PanelLeftClose size={17} /><span>Collapse sidebar</span></button></div>
-      <div className="sidebar-footer"><div className="footer-status"><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /><span>{health?.demo_mode ? "Demo mode" : "Connected"}</span></div><small>{health ? (health.demo_mode ? "Synthetic sources" : "Live data sources") : "Checking status…"}</small></div>
-    </aside>
-    <main className={`main ${collapsed ? "expanded" : ""}`}>
-      <header className="topbar"><button type="button" className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>{appView.kind === "industry" ? "Industries" : "Company research"}</span><ChevronRight size={14} /><strong>{appView.kind === "industry" ? (industries.find((i) => i.id === appView.id)?.name ?? "Industry") : "Verified deep dive"}</strong></div><div className="topbar-meta"><span><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /> {health?.demo_mode ? "Demo data clearly labelled" : "Live data connected"}</span><div className="top-avatar">FR</div></div></header>
+    <Sidebar sections={navSections} collapsed={collapsed} onToggle={toggleSidebar} mobileOpen={sidebarOpen} onCloseMobile={closeSidebar}
+      user={user} status={health?.demo_mode ? { tone: "amber", label: "Offline snapshot" } : { tone: "teal", label: "Verified data" }} />
+    <main className="main">
+      <header className="topbar"><button type="button" className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>{appView.kind === "industry" ? "Industries" : "Company research"}</span><ChevronRight size={14} /><strong>{appView.kind === "industry" ? (industries.find((i) => i.id === appView.id)?.name ?? "Industry") : "Verified deep dive"}</strong></div><div className="topbar-meta"><span><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /> {health?.demo_mode ? "Offline snapshot" : "Verified data"}</span><UserMenu user={user} onSignOut={onSignOut} /></div></header>
       <div className="content-shell">
         {appView.kind === "industry" && <IndustryView key={appView.id} industryId={appView.id} onDeepDive={openDeepDive} />}
-        {appView.kind === "research" && <>
-          <section className="hero"><div><div className="hero-kicker"><Sparkles size={14} /> VERIFIED FINANCIAL INTELLIGENCE</div><h1>Verified deep dive</h1><p>One company, every claim traced to its source. Slower by design - each figure is checked by the LLM verifier.</p></div><div className="hero-note"><ShieldCheck size={17} /><span>Every factual claim is independently verified against its source.</span></div></section>
+        {appView.kind === "research" && <div className="view-anim">
+          <section className="hero"><div><div className="hero-kicker"><Sparkles size={14} /> VERIFIED REPORTS</div><h1>Verified deep dive</h1><p>One company, every claim traced to its source. Slower by design - each figure is checked by the LLM verifier.</p></div><div className="hero-note"><ShieldCheck size={17} /><span>Every factual claim is independently verified against its source.</span></div></section>
           <section className="query-panel"><div className="query-label"><Search size={15} /><label htmlFor="research-query">Company or research query</label><kbd>ENTER</kbd></div><div className="query-row"><input id="research-query" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && runResearch()} placeholder="e.g. Analyze Infosys revenue and risks" disabled={loading} /><Button variant="primary" onClick={() => runResearch()} disabled={loading}>{loading ? <><LoaderCircle size={15} className="spin" /> Running</> : <><Send size={15} /> Run research</>}</Button></div><div className="example-chips">{examples.map((example) => <button type="button" key={example} onClick={() => runResearch(example)} disabled={loading}>{example}</button>)}</div>{health && <div className={`mode-banner ${health.demo_mode ? "demo" : "live"}`}><StatusDot tone={health.demo_mode ? "amber" : "teal"} /><span>{health.demo_mode ? "Demo mode: sources are synthetic and explicitly labelled." : "Live mode: connected to real filings, financial data, and web sources."}</span></div>}</section>
-          {loading && <LoadingState run={run} />}
+          {loading && <Pipeline run={run} running />}
           {error && <div className="error-panel"><AlertTriangle size={18} /><div><strong>Research could not be completed</strong><span>{error}</span></div><button type="button" onClick={() => setError("")} aria-label="Dismiss error"><X size={16} /></button></div>}
           {run && report && <ResearchResults company={company} run={run} report={report} claims={claims} sources={sources} conflicts={conflicts} activeTab={activeTab} setActiveTab={setActiveTab} claimFilter={claimFilter} setClaimFilter={setClaimFilter} filteredClaims={filteredClaims} />}
-          {!run && !loading && !error && <EmptyState onSelect={(example) => runResearch(example)} />}
-        </>}
+          {!run && !loading && !error && <Pipeline />}
+        </div>}
       </div>
     </main>
   </div>;
 }
 
-function LoadingState({ run }: { run: ResearchRun | null }) {
-  const status = run?.status ?? "pending";
-  const copy = STAGE_COPY[status] ?? STAGE_COPY.pending;
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    const start = Date.now();
-    const id = setInterval(() => setElapsed(Math.round((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  const steps: { id: string; label: string }[] = [
-    { id: "planning", label: "Plan" },
-    { id: "retrieving", label: "Retrieve" },
-    { id: "extracting", label: "Extract" },
-    { id: "verifying", label: "Verify" },
-  ];
-
-  return (
-    <section className="loading-state">
-      <div className="loading-orbit"><LoaderCircle size={22} className="spin" /></div>
-      <div>
-        <strong>{copy.title}</strong>
-        <p>{copy.detail}</p>
-      </div>
-      <div className="loading-steps">
-        {steps.map((step) => (
-          <span key={step.id} className={stageState(step.id, status)}>{step.label}</span>
-        ))}
-      </div>
-      <span className="loading-elapsed">
-        {formatElapsed(elapsed)} elapsed · typically 3–5 min — every claim is checked against its source, not guessed
-      </span>
-    </section>
-  );
-}
-
-function EmptyState({ onSelect }: { onSelect: (query: string) => void }) {
-  return <section className="empty-state large"><div className="empty-icon"><Globe2 size={24} /></div><span className="eyebrow">Start with a question</span><h2>Your next research brief begins here.</h2><p>Run a company or comparison query to generate a structured report with source provenance, claim-level verification, and conflict detection.</p><div className="empty-suggestions">{["Analyze Infosys revenue and risks", "Compare TCS and Wipro"].map((item) => <button type="button" key={item} onClick={() => onSelect(item)}>{item}<ChevronRight size={14} /></button>)}</div></section>;
-}
-
 function ResearchResults({ company, run, report, claims, sources, conflicts, activeTab, setActiveTab, claimFilter, setClaimFilter, filteredClaims }: { company: string; run: ResearchRun; report: Report; claims: Claim[]; sources: Source[]; conflicts: Conflict[]; activeTab: Tab; setActiveTab: (tab: Tab) => void; claimFilter: ClaimFilter; setClaimFilter: (filter: ClaimFilter) => void; filteredClaims: Claim[] }) {
-  return <section className="results"><div className="results-heading"><div><div className="company-line"><span className="company-monogram">{company.slice(0, 1).toUpperCase()}</span><span>{company}</span><StatusDot /></div><h2>Verified research brief</h2><p>{run.plan?.period || "Period not specified"} · completed {new Date(run.updated_at).toLocaleString()}</p></div><div className="result-actions"><span className="complete-status"><Check size={14} /> {run.status}</span><span className="run-id"><Clock3 size={13} /> {run.research_run_id}</span></div></div><div className="metrics-strip"><Metric label="Sources" value={String(sources.length)} detail="documents retrieved" /><Metric label="Claims" value={String(report.total_claims)} detail="extracted and checked" /><Metric label="Avg. confidence" value={report.average_confidence != null ? `${Math.round(report.average_confidence * 100)}%` : "—"} detail="weighted verification" tone="positive" /><Metric label="Conflicts" value={String(conflicts.length)} detail={conflicts.length ? "review recommended" : "none detected"} tone={conflicts.length ? "negative" : "neutral"} /></div><nav className="tabs" aria-label="Research result sections">{tabs.map(({ id, label, icon: Icon }) => <button type="button" key={id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}><Icon size={15} />{label}{id === "claims" && claims.length > 0 && <em>{claims.length}</em>}{id === "conflicts" && conflicts.length > 0 && <em>{conflicts.length}</em>}</button>)}</nav><div className="result-panel">{activeTab === "overview" && <OverviewTab report={report} />}{activeTab === "financials" && <FinancialsTab claims={claims} section={report.financial_performance} />}{activeTab === "risks" && <ReportText title="Risks" section={report.risks} />}{activeTab === "findings" && <ReportText title="Important findings" section={report.important_findings} />}{activeTab === "claims" && <ClaimsTab claims={filteredClaims} filter={claimFilter} setFilter={setClaimFilter} sources={sources} />}{activeTab === "conflicts" && <ConflictsTab conflicts={conflicts} />}{activeTab === "sources" && <SourcesTab sources={sources} />}</div></section>;
+  return <section className="results"><div className="results-heading"><div><div className="company-line"><span className="company-monogram">{company.slice(0, 1).toUpperCase()}</span><span>{company}</span><StatusDot /></div><h2>Verified research brief</h2><p>{run.plan?.period || "Period not specified"} · completed {new Date(run.updated_at).toLocaleString()}</p></div><div className="result-actions"><span className="complete-status"><Check size={14} /> {run.status}</span><span className="run-id"><Clock3 size={13} /> {run.research_run_id}</span></div></div><div className="metrics-strip"><Metric label="Sources" value={String(sources.length)} detail="documents retrieved" /><Metric label="Claims" value={String(report.total_claims)} detail="extracted and checked" /><Metric label="Avg. confidence" value={report.average_confidence != null ? `${Math.round(report.average_confidence * 100)}%` : "—"} detail="weighted verification" tone="positive" /><Metric label="Conflicts" value={String(conflicts.length)} detail={conflicts.length ? "review recommended" : "none detected"} tone={conflicts.length ? "negative" : "neutral"} /></div><Tabs label="Research result sections" active={activeTab} onChange={setActiveTab} tabs={tabs.map(({ id, label, icon: Icon }) => ({ id, label, icon: <Icon size={15} />, count: id === "claims" ? claims.length : id === "conflicts" ? conflicts.length : undefined }))} /><div className="result-panel panel-anim" key={activeTab}>{activeTab === "overview" && <OverviewTab report={report} />}{activeTab === "financials" && <FinancialsTab claims={claims} section={report.financial_performance} />}{activeTab === "risks" && <ReportText title="Risks" section={report.risks} />}{activeTab === "findings" && <ReportText title="Important findings" section={report.important_findings} />}{activeTab === "claims" && <ClaimsTab claims={filteredClaims} filter={claimFilter} setFilter={setClaimFilter} sources={sources} />}{activeTab === "conflicts" && <ConflictsTab conflicts={conflicts} />}{activeTab === "sources" && <SourcesTab sources={sources} />}</div></section>;
 }
 
 function OverviewTab({ report }: { report: Report }) { return <div className="overview-content"><ReportText title="Executive overview" section={report.executive_overview} /><div className="verification-callout"><ShieldCheck size={19} /><div><strong>Claim verification summary</strong><p>{report.claim_verification_summary.content}</p><div className="verdicts"><span className="supported">{report.supported_claims} supported</span><span className="contradicted">{report.contradicted_claims} contradicted</span><span className="insufficient">{report.insufficient_claims} insufficient</span></div></div></div>{report.comparison_tables?.map((table) => <div className="comparison-block" key={table.title}><div className="section-title"><span className="eyebrow">Comparison</span><h3>{table.title}</h3></div><DataTable columns={table.columns} rows={table.rows} /></div>)}</div>; }

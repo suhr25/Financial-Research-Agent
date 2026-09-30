@@ -26,6 +26,7 @@ def _poll_until_terminal(client: TestClient, run_id: str, timeout: float = 10.0)
 
 def test_full_research_pipeline_via_api():
     with TestClient(app) as client:
+        client.post("/api/auth/demo")
         health = client.get("/api/health")
         assert health.status_code == 200
         assert health.json()["demo_mode"] is True
@@ -62,6 +63,7 @@ def test_full_research_pipeline_via_api():
 
 def test_unresolvable_company_fails_gracefully_not_with_a_server_error():
     with TestClient(app) as client:
+        client.post("/api/auth/demo")
         resp = client.post("/api/research", json={"query": "Analyze Zzzznotarealcompany Q1 2024"})
         assert resp.status_code == 202
         run_id = resp.json()["research_run_id"]
@@ -72,5 +74,6 @@ def test_unresolvable_company_fails_gracefully_not_with_a_server_error():
 
 def test_unknown_research_id_returns_404():
     with TestClient(app) as client:
+        client.post("/api/auth/demo")
         resp = client.get("/api/research/run_does_not_exist")
         assert resp.status_code == 404

@@ -36,12 +36,7 @@ def retrieve_relevant_text(document_text: str, query: str, max_chars: int) -> st
 
 
 def _rag_select(document_text: str, query: str, max_chars: int) -> str:
-    # langchain-community emits a maintenance-mode deprecation warning as of
-    # this writing; its FAISS integration is still the correct, stable API
-    # for this use case (there is no drop-in standalone replacement - the
-    # early-stage `langchain-faiss` package on PyPI has a different,
-    # unstable interface). Not a functional concern - noted here so it
-    # reads as a deliberate call, not an oversight.
+
     from langchain_community.vectorstores import FAISS
     from langchain_text_splitters import RecursiveCharacterTextSplitter
 

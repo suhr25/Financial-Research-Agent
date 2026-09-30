@@ -246,7 +246,9 @@ def test_find_mentions_does_not_duplicate_universe_companies():
 def client():
     from app.main import app
 
-    return TestClient(app)
+    c = TestClient(app)
+    c.post("/api/auth/demo")
+    return c
 
 
 def test_api_lists_industries(client):
