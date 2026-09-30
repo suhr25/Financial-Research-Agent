@@ -1,0 +1,25 @@
+{
+  "industries": [
+    {
+      "id": "information-technology",
+      "name": "Information Technology",
+      "short_name": "IT",
+      "universe": "NIFTY IT",
+      "description": "India's ten largest listed IT services and software companies - the constituents of the NIFTY IT index.",
+      "currency": "INR",
+      "benchmark_symbol": "^CNXIT",
+      "companies": [
+        {"name": "Tata Consultancy Services", "short_name": "TCS", "symbol": "TCS.NS", "nse": "TCS", "tier": "Large cap", "aliases": ["tata consultancy", "tcs"]},
+        {"name": "Infosys", "short_name": "Infosys", "symbol": "INFY.NS", "nse": "INFY", "tier": "Large cap", "aliases": ["infosys", "infy"]},
+        {"name": "HCLTech", "short_name": "HCLTech", "symbol": "HCLTECH.NS", "nse": "HCLTECH", "tier": "Large cap", "aliases": ["hcl technologies", "hcltech", "hcl tech", "hcl"]},
+        {"name": "Wipro", "short_name": "Wipro", "symbol": "WIPRO.NS", "nse": "WIPRO", "tier": "Large cap", "aliases": ["wipro"]},
+        {"name": "Tech Mahindra", "short_name": "Tech M", "symbol": "TECHM.NS", "nse": "TECHM", "tier": "Large cap", "aliases": ["tech mahindra", "techm"]},
+        {"name": "LTIMindtree", "short_name": "LTIM", "symbol": "LTM.NS", "nse": "LTM", "tier": "Large cap", "aliases": ["ltimindtree", "lti mindtree", "ltim", "ltm limited"]},
+        {"name": "Persistent Systems", "short_name": "Persistent", "symbol": "PERSISTENT.NS", "nse": "PERSISTENT", "tier": "Mid cap", "aliases": ["persistent systems", "persistent"]},
+        {"name": "Coforge", "short_name": "Coforge", "symbol": "COFORGE.NS", "nse": "COFORGE", "tier": "Mid cap", "aliases": ["coforge"]},
+        {"name": "Mphasis", "short_name": "Mphasis", "symbol": "MPHASIS.NS", "nse": "MPHASIS", "tier": "Mid cap", "aliases": ["mphasis"]},
+        {"name": "Oracle Financial Services Software", "short_name": "OFSS", "symbol": "OFSS.NS", "nse": "OFSS", "tier": "Mid cap", "aliases": ["oracle financial services", "ofss", "oracle financial"]}
+      ]
+    }
+  ]
+}

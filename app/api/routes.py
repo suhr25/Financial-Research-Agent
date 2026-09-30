@@ -7,7 +7,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.industry.service import IndustryService
+from app.industry.universe import list_industries
 from app.schemas import Claim, Conflict, ResearchRun, Source
+from app.schemas.industry import IndustrySnapshot, IndustrySummary
 from app.storage import repositories as repo
 from app.storage.database import get_session
 
@@ -39,6 +42,26 @@ def health():
         "search_provider": settings.search_provider,
         "search_available": settings.search_available,
     }
+
+
+@router.get("/industries", response_model=list[IndustrySummary])
+def get_industries():
+    return list_industries()
+
+
+@router.get("/industries/{industry_id}", response_model=IndustrySnapshot)
+def get_industry_snapshot(industry_id: str, refresh: bool = False):
+    """Peer metrics, cross-checks, concentration and diversification for
+    one industry universe. Served from cache (see IndustryService) - pass
+    refresh=true to force a live re-fetch (~2-3s)."""
+    try:
+        snapshot = IndustryService().get_snapshot(industry_id, force_refresh=refresh)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Industry snapshot failed for %s", industry_id)
+        raise HTTPException(status_code=502, detail=f"Could not load industry data: {exc}") from exc
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="industry not found")
+    return snapshot
 
 
 @router.post("/research", response_model=ResearchRun, status_code=202)

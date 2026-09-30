@@ -9,3 +9,6 @@ evaluation/results/
 frontend/node_modules/
 frontend/dist/
 frontend/tsconfig.tsbuildinfo
+
+# Industry dashboard runtime cache (regenerated from live data)
+data/industry_cache/

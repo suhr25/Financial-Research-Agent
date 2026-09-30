@@ -6,6 +6,10 @@ module contains `if company == "..."` branching - everything downstream
 consumes CompanyEntity objects produced here.
 
 Resolution order:
+0. Industry universes (sample_data/industries.json) - checked first because
+   they are NSE listings the SEC directory doesn't know, and some of their
+   short names collide with unrelated US tickers ("TCS" on SEC EDGAR is
+   The Container Store, not Tata Consultancy Services).
 1. Live SEC EDGAR `company_tickers.json` (public, no API key required - only
    a descriptive User-Agent per SEC's fair-access policy). Cached in-process
    after first successful fetch.
@@ -28,6 +32,7 @@ from pathlib import Path
 import httpx
 
 from app.config import BASE_DIR, get_settings
+from app.industry.universe import find_universe_company, find_universe_mentions
 from app.schemas import CompanyEntity
 
 logger = logging.getLogger("financial_research_agent.retrieval.company_resolver")
@@ -104,6 +109,16 @@ class CompanyResolver:
         if not raw_name:
             return CompanyEntity(name=raw_name, resolved=False, resolution_notes="Empty company name")
 
+        universe_hit = find_universe_company(raw_name)
+        if universe_hit is not None:
+            return CompanyEntity(
+                name=universe_hit.name,
+                ticker=universe_hit.symbol,
+                exchange="NSE",
+                resolved=True,
+                resolution_notes=f"Matched industry universe company {universe_hit.nse}",
+            )
+
         directory = self._load_directory()
         upper = raw_name.upper()
         normalized_query = _normalize(raw_name)
@@ -155,8 +170,12 @@ class CompanyResolver:
         inside "Apple". A minimum normalized-name length also guards against
         very short names matching common words by coincidence.
         """
+        universe = find_universe_mentions(text)
+        found: list[str] = [company.name for company in universe]
+        # Tokens already claimed by a universe company must not also match
+        # an unrelated SEC registrant sharing that ticker/name.
+        claimed = {key.upper() for company in universe for key in (company.nse, *company.aliases)}
         directory = self._load_directory()
-        found: list[str] = []
         for row in directory:
             name = row["name"]
             ticker = row.get("ticker")
@@ -165,6 +184,8 @@ class CompanyResolver:
                 rf"\b{re.escape(short_name)}\b", text, re.IGNORECASE
             )
             ticker_match = bool(ticker) and re.search(rf"\b{re.escape(ticker)}\b", text)
+            if universe and find_universe_company(short_name) is not None:
+                continue  # e.g. "Infosys Limited" already found as the universe's Infosys
             if (name_match or ticker_match) and name not in found:
                 found.append(name)
         return found

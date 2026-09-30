@@ -13,7 +13,9 @@ import {
   FileText,
   Filter,
   Globe2,
+  Layers,
   LayoutDashboard,
+  ScanSearch,
   LoaderCircle,
   Menu,
   PanelLeftClose,
@@ -24,13 +26,15 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { api, type Claim, type Conflict, type HealthResponse, type Report, type ResearchRun, type Source } from "./services/api";
+import { IndustryView } from "./industry/IndustryView";
+import { api, industryApi, type IndustrySummary, type Claim, type Conflict, type HealthResponse, type Report, type ResearchRun, type Source } from "./services/api";
 import "./styles.css";
 
 type Tab = "overview" | "financials" | "risks" | "findings" | "claims" | "conflicts" | "sources";
 type ClaimFilter = "all" | "supported" | "contradicted" | "insufficient";
 
-const examples = ["Analyze Apple Q3 2024", "Microsoft FY2024 revenue and risks", "Analyze NVIDIA revenue and profitability", "Compare Apple and Microsoft"];
+const examples = ["Analyze Infosys revenue and risks", "Compare TCS and Wipro", "HCLTech profitability and margins", "Analyze Persistent Systems growth"];
+type AppView = { kind: "industry"; id: string } | { kind: "research" };
 const POLL_INTERVAL_MS = 1500;
 const MAX_CONSECUTIVE_POLL_ERRORS = 5;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,8 +95,14 @@ function App() {
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [industries, setIndustries] = useState<IndustrySummary[]>([]);
+  const [appView, setAppView] = useState<AppView>({ kind: "industry", id: "information-technology" });
 
   useEffect(() => { api.health().then(setHealth).catch(() => undefined); }, []);
+  useEffect(() => { industryApi.list().then(setIndustries).catch(() => undefined); }, []);
+
+  const go = (next: AppView) => { setAppView(next); setSidebarOpen(false); window.scrollTo({ top: 0 }); };
+  const openDeepDive = (nextQuery: string) => { go({ kind: "research" }); setQuery(nextQuery); runResearch(nextQuery); };
 
   const runResearch = async (nextQuery = query) => {
     const trimmed = nextQuery.trim();
@@ -143,19 +153,23 @@ function App() {
     <aside className={`sidebar ${collapsed ? "collapsed" : ""} ${sidebarOpen ? "mobile-open" : ""}`}>
       <div className="brand"><div className="logo-mark"><span /><span /><span /></div><div className="brand-copy"><strong>lattice<span>.</span></strong><small>research intelligence</small></div></div>
       <div className="workspace-switcher"><div className="workspace-avatar">F</div><div><strong>Financial Research</strong><small>Evidence workspace</small></div><ChevronDown size={15} /></div>
-      <div className="sidebar-section"><span className="nav-label">Workspace</span><button className="nav-item active" type="button"><LayoutDashboard size={17} /><span>Research desk</span></button><button className="nav-item" type="button" onClick={() => setActiveTab("sources")}><BookOpen size={17} /><span>Source library</span></button><button className="nav-item" type="button" onClick={() => setActiveTab("claims")}><ShieldCheck size={17} /><span>Verified claims</span>{claims.length > 0 && <em>{claims.length}</em>}</button></div>
+      <div className="sidebar-section"><span className="nav-label">Industries</span>{industries.map((ind) => <button key={ind.id} className={`nav-item ${appView.kind === "industry" && appView.id === ind.id ? "active" : ""}`} type="button" onClick={() => go({ kind: "industry", id: ind.id })} title={ind.universe}><Layers size={17} /><span>{ind.name}</span><em>{ind.company_count}</em></button>)}</div>
+      <div className="sidebar-section sidebar-lower"><span className="nav-label">Company research</span><button className={`nav-item ${appView.kind === "research" ? "active" : ""}`} type="button" onClick={() => go({ kind: "research" })}><ScanSearch size={17} /><span>Verified deep dive</span>{loading && <LoaderCircle size={13} className="spin nav-spin" />}</button>{appView.kind === "research" && report && <><button className="nav-item sub" type="button" onClick={() => setActiveTab("sources")}><BookOpen size={17} /><span>Sources</span></button><button className="nav-item sub" type="button" onClick={() => setActiveTab("claims")}><ShieldCheck size={17} /><span>Verified claims</span>{claims.length > 0 && <em>{claims.length}</em>}</button></>}</div>
       <div className="sidebar-section sidebar-lower"><span className="nav-label">System</span><button className="nav-item" type="button" onClick={() => api.health().then(setHealth).catch(() => undefined)}><RefreshCw size={17} /><span>System status</span></button><button className="nav-item" type="button" onClick={() => setCollapsed(!collapsed)}><PanelLeftClose size={17} /><span>Collapse sidebar</span></button></div>
       <div className="sidebar-footer"><div className="footer-status"><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /><span>{health?.demo_mode ? "Demo mode" : "Connected"}</span></div><small>{health ? (health.demo_mode ? "Synthetic sources" : "Live data sources") : "Checking status…"}</small></div>
     </aside>
     <main className={`main ${collapsed ? "expanded" : ""}`}>
-      <header className="topbar"><button type="button" className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>Research workspace</span><ChevronRight size={14} /><strong>Desk</strong></div><div className="topbar-meta"><span><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /> {health?.demo_mode ? "Demo data clearly labelled" : "Live data connected"}</span><div className="top-avatar">FR</div></div></header>
+      <header className="topbar"><button type="button" className="mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumb"><span>{appView.kind === "industry" ? "Industries" : "Company research"}</span><ChevronRight size={14} /><strong>{appView.kind === "industry" ? (industries.find((i) => i.id === appView.id)?.name ?? "Industry") : "Verified deep dive"}</strong></div><div className="topbar-meta"><span><StatusDot tone={health?.demo_mode ? "amber" : "teal"} /> {health?.demo_mode ? "Demo data clearly labelled" : "Live data connected"}</span><div className="top-avatar">FR</div></div></header>
       <div className="content-shell">
-        <section className="hero"><div><div className="hero-kicker"><Sparkles size={14} /> VERIFIED FINANCIAL INTELLIGENCE</div><h1>Research desk</h1><p>Ask a question. Trace every answer back to evidence.</p></div><div className="hero-note"><ShieldCheck size={17} /><span>Every factual claim is independently verified against its source.</span></div></section>
-        <section className="query-panel"><div className="query-label"><Search size={15} /><label htmlFor="research-query">Company or research query</label><kbd>ENTER</kbd></div><div className="query-row"><input id="research-query" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && runResearch()} placeholder="e.g. Analyze Apple Q3 2024" disabled={loading} /><Button variant="primary" onClick={() => runResearch()} disabled={loading}>{loading ? <><LoaderCircle size={15} className="spin" /> Running</> : <><Send size={15} /> Run research</>}</Button></div><div className="example-chips">{examples.map((example) => <button type="button" key={example} onClick={() => runResearch(example)} disabled={loading}>{example}</button>)}</div>{health && <div className={`mode-banner ${health.demo_mode ? "demo" : "live"}`}><StatusDot tone={health.demo_mode ? "amber" : "teal"} /><span>{health.demo_mode ? "Demo mode: sources are synthetic and explicitly labelled." : "Live mode: connected to real filings, financial data, and web sources."}</span></div>}</section>
+        {appView.kind === "industry" && <IndustryView key={appView.id} industryId={appView.id} onDeepDive={openDeepDive} />}
+        {appView.kind === "research" && <>
+        <section className="hero"><div><div className="hero-kicker"><Sparkles size={14} /> VERIFIED FINANCIAL INTELLIGENCE</div><h1>Verified deep dive</h1><p>One company, every claim traced to its source. Slower by design - each figure is checked by the LLM verifier.</p></div><div className="hero-note"><ShieldCheck size={17} /><span>Every factual claim is independently verified against its source.</span></div></section>
+        <section className="query-panel"><div className="query-label"><Search size={15} /><label htmlFor="research-query">Company or research query</label><kbd>ENTER</kbd></div><div className="query-row"><input id="research-query" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && runResearch()} placeholder="e.g. Analyze Infosys revenue and risks" disabled={loading} /><Button variant="primary" onClick={() => runResearch()} disabled={loading}>{loading ? <><LoaderCircle size={15} className="spin" /> Running</> : <><Send size={15} /> Run research</>}</Button></div><div className="example-chips">{examples.map((example) => <button type="button" key={example} onClick={() => runResearch(example)} disabled={loading}>{example}</button>)}</div>{health && <div className={`mode-banner ${health.demo_mode ? "demo" : "live"}`}><StatusDot tone={health.demo_mode ? "amber" : "teal"} /><span>{health.demo_mode ? "Demo mode: sources are synthetic and explicitly labelled." : "Live mode: connected to real filings, financial data, and web sources."}</span></div>}</section>
         {loading && <LoadingState run={run} />}
         {error && <div className="error-panel"><AlertTriangle size={18} /><div><strong>Research could not be completed</strong><span>{error}</span></div><button type="button" onClick={() => setError("")} aria-label="Dismiss error"><X size={16} /></button></div>}
         {run && report && <ResearchResults company={company} run={run} report={report} claims={claims} sources={sources} conflicts={conflicts} activeTab={activeTab} setActiveTab={setActiveTab} claimFilter={claimFilter} setClaimFilter={setClaimFilter} filteredClaims={filteredClaims} />}
         {!run && !loading && !error && <EmptyState onSelect={(example) => runResearch(example)} />}
+        </>}
       </div>
     </main>
   </div>;
@@ -199,7 +213,7 @@ function LoadingState({ run }: { run: ResearchRun | null }) {
 }
 
 function EmptyState({ onSelect }: { onSelect: (query: string) => void }) {
-  return <section className="empty-state large"><div className="empty-icon"><Globe2 size={24} /></div><span className="eyebrow">Start with a question</span><h2>Your next research brief begins here.</h2><p>Run a company or comparison query to generate a structured report with source provenance, claim-level verification, and conflict detection.</p><div className="empty-suggestions">{["Analyze NVIDIA revenue and profitability", "Compare Apple and Microsoft"].map((item) => <button type="button" key={item} onClick={() => onSelect(item)}>{item}<ChevronRight size={14} /></button>)}</div></section>;
+  return <section className="empty-state large"><div className="empty-icon"><Globe2 size={24} /></div><span className="eyebrow">Start with a question</span><h2>Your next research brief begins here.</h2><p>Run a company or comparison query to generate a structured report with source provenance, claim-level verification, and conflict detection.</p><div className="empty-suggestions">{["Analyze Infosys revenue and risks", "Compare TCS and Wipro"].map((item) => <button type="button" key={item} onClick={() => onSelect(item)}>{item}<ChevronRight size={14} /></button>)}</div></section>;
 }
 
 function ResearchResults({ company, run, report, claims, sources, conflicts, activeTab, setActiveTab, claimFilter, setClaimFilter, filteredClaims }: { company: string; run: ResearchRun; report: Report; claims: Claim[]; sources: Source[]; conflicts: Conflict[]; activeTab: Tab; setActiveTab: (tab: Tab) => void; claimFilter: ClaimFilter; setClaimFilter: (filter: ClaimFilter) => void; filteredClaims: Claim[] }) {

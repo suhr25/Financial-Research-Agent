@@ -130,12 +130,22 @@ export interface HealthResponse {
   search_available: boolean;
 }
 
+const BACKEND_DOWN = "Can't reach the backend server. Start it with .\\scripts\\dev.ps1 (port 8000), then retry.";
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
-  const data = await response.json().catch(() => ({}));
+  let response: Response;
+  try {
+    response = await fetch(url, options);
+  } catch {
+    throw new Error(BACKEND_DOWN);
+  }
+  const data = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = typeof data?.detail === "string" ? data.detail : `Request failed (${response.status})`;
-    throw new Error(detail);
+    if (typeof data?.detail === "string") throw new Error(data.detail);
+    // FastAPI always answers with a JSON body. A bodiless 5xx means the Vite
+    // dev proxy couldn't reach the backend at all (e.g. it isn't running).
+    if (data === null && response.status >= 500) throw new Error(BACKEND_DOWN);
+    throw new Error(`Request failed (${response.status})`);
   }
   return data as T;
 }
@@ -152,4 +162,137 @@ export const api = {
   sources: (id: string) => fetchJson<Source[]>(`/api/research/${id}/sources`),
   conflicts: (id: string) => fetchJson<Conflict[]>(`/api/research/${id}/conflicts`),
   report: (id: string) => fetchJson<Report>(`/api/research/${id}/report`),
+};
+
+// ---- Industry dashboard ----------------------------------------------------
+
+export interface IndustrySummary {
+  id: string;
+  name: string;
+  short_name: string;
+  universe: string;
+  description: string;
+  company_count: number;
+}
+
+export type CheckStatus = "verified" | "mismatch" | "unavailable";
+
+export interface CrossCheck {
+  metric: string;
+  label: string;
+  reported?: number | null;
+  recomputed?: number | null;
+  difference_pct?: number | null;
+  tolerance_pct: number;
+  status: CheckStatus;
+  detail: string;
+  informational: boolean;
+}
+
+export interface QuarterPoint {
+  period_end: string;
+  revenue?: number | null;
+  net_income?: number | null;
+  operating_profit?: number | null;
+  eps_diluted?: number | null;
+  filed_at?: string | null;
+  audited?: string | null;
+  filing_url?: string | null;
+  notes: string[];
+}
+
+export interface CompanyMetrics {
+  name: string;
+  short_name: string;
+  symbol: string;
+  nse: string;
+  tier: string;
+  available: boolean;
+  error?: string | null;
+  price?: number | null;
+  price_date?: string | null;
+  shares_outstanding?: number | null;
+  market_cap?: number | null;
+  revenue_ttm?: number | null;
+  net_income_ttm?: number | null;
+  eps_ttm?: number | null;
+  revenue_growth_yoy?: number | null;
+  earnings_growth_yoy?: number | null;
+  operating_margin?: number | null;
+  profit_margin?: number | null;
+  pe_trailing?: number | null;
+  dividends_ttm?: number | null;
+  dividend_yield?: number | null;
+  return_1y?: number | null;
+  volatility_1y?: number | null;
+  max_drawdown_1y?: number | null;
+  market_cap_weight?: number | null;
+  latest_quarter?: string | null;
+  quarters: QuarterPoint[];
+  checks: CrossCheck[];
+  verification_status: CheckStatus;
+}
+
+export interface MetricAggregate {
+  metric: string;
+  median?: number | null;
+  mean?: number | null;
+  weighted_mean?: number | null;
+  min?: number | null;
+  max?: number | null;
+  leader?: string | null;
+  laggard?: string | null;
+  count: number;
+}
+
+export interface PairCorrelation { a: string; b: string; correlation: number }
+
+export interface PortfolioStats {
+  label: string;
+  expected_return?: number | null;
+  volatility?: number | null;
+  diversification_ratio?: number | null;
+  volatility_reduction?: number | null;
+}
+
+export interface IndustrySnapshot {
+  industry: IndustrySummary;
+  mode: "live" | "demo";
+  currency: string;
+  fetched_at: string;
+  fetch_seconds?: number | null;
+  stale: boolean;
+  refreshing: boolean;
+  price_date?: string | null;
+  source: string;
+  companies: CompanyMetrics[];
+  aggregates: Record<string, MetricAggregate>;
+  concentration: {
+    total_market_cap?: number | null;
+    hhi?: number | null;
+    effective_companies?: number | null;
+    top3_share?: number | null;
+    largest?: string | null;
+    largest_share?: number | null;
+  };
+  diversification: {
+    symbols: string[];
+    lookback_days: number;
+    correlation: (number | null)[][];
+    covariance: (number | null)[][];
+    annual_returns: (number | null)[];
+    average_pairwise_correlation?: number | null;
+    equal_weight?: PortfolioStats | null;
+    market_cap_weight?: PortfolioStats | null;
+    least_correlated: PairCorrelation[];
+    most_correlated: PairCorrelation[];
+  };
+  insights: { kind: string; title: string; detail: string }[];
+  warnings: string[];
+}
+
+export const industryApi = {
+  list: () => fetchJson<IndustrySummary[]>("/api/industries"),
+  snapshot: (id: string, refresh = false) =>
+    fetchJson<IndustrySnapshot>(`/api/industries/${id}${refresh ? "?refresh=true" : ""}`),
 };

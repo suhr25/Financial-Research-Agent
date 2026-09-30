@@ -70,7 +70,8 @@ storage layer with distinct `source` / `claim` / `evidence` / `verification_resu
   with optional tokens-per-minute pacing for rate-limited free tiers
 - **Web search**: Tavily or SerpAPI, behind a swappable `SearchProvider`
 - **Financial data**: SEC EDGAR (XBRL company facts, no key required) as the primary-filing
-  source; Alpha Vantage or yfinance as the structured financial-API source
+  source; Alpha Vantage or yfinance (>= 1.x - older releases are blocked by Yahoo) as the
+  structured financial-API source
 - **RAG (LangChain)**: long source documents are chunked (`RecursiveCharacterTextSplitter`),
   embedded locally (`sentence-transformers/all-MiniLM-L6-v2`, no API key/network call) and
   indexed in an ephemeral per-source FAISS store; the Claim Extractor retrieves the chunks
@@ -92,6 +93,55 @@ LLMProvider          SearchProvider         FinancialDataProvider
   (mock: see below)     |- MockSearchProvider  |- MockFinancialDataProvider
                                                 (SEC EDGAR handled separately, primary-filing tier)
 ```
+
+## Industry Dashboard (NIFTY IT)
+
+The landing view compares India's ten largest listed IT companies, the NIFTY IT constituents:
+TCS, Infosys, HCLTech, Wipro, Tech Mahindra, LTIMindtree, Persistent, Coforge, Mphasis and
+OFSS. It makes **no LLM calls**, so it answers in milliseconds from cache (~5-10s for a forced
+live refresh of all ten).
+
+**Data comes only from NSE India, the exchange.** No third-party aggregator or estimate is
+used:
+
+| Figure | Official source |
+|---|---|
+| Revenue, net profit, EPS, operating profit, shares in issue | Each company's consolidated quarterly results **XBRL filed with NSE** ("Integrated Filing - Financials") |
+| Price, 1-year return, volatility, correlations | NSE security-wise daily closes, adjusted for splits and bonuses |
+| Latest close cross-check | NSE end-of-day **bhavcopy** file |
+| Dividend yield, split/bonus adjustments | NSE corporate actions |
+
+Yahoo Finance was used originally and was dropped after measurement showed several problems.
+Its prices were a day stale. It omitted whole quarters (Sep-2025 for 8 of the 10 companies).
+It reported Infosys in USD, which overstated INR revenue by ~5% after conversion. Metrics NSE
+doesn't publish (ROE, headcount, analyst targets, forward P/E) were removed rather than sourced
+elsewhere.
+
+- **Universe as data**: `sample_data/industries.json`. Adding an industry is a JSON edit.
+- **NSE client** (`app/industry/nse.py`): a browser-impersonating session (NSE rejects plain
+  HTTP clients). Parsed filings are cached permanently under `data/industry_cache/filings/`,
+  because an exchange filing never changes once published.
+- **Consistency checks** (`app/industry/analytics.py`), deterministic with no LLM:
+  - The four quarterly filings of the last fiscal year must add up to that year's annual
+    figures (revenue and profit).
+  - The reported EPS must match net profit ÷ shares in issue.
+  - The latest close must match NSE's bhavcopy.
+- **Filing corrections are shown, never hidden.** Companies occasionally mis-tag their own
+  XBRL. For example, Tech Mahindra's Dec-2025 filing tags owners' profit as Rs 198.7 Cr when
+  its own total profit less minority interest is Rs 1,113.5 Cr. The accounting identity is
+  applied and a note appears in that company's panel. A quarter tagged with the wrong dates is
+  shown as unavailable rather than guessed.
+- **Diversification**: market-cap concentration (HHI, effective number of companies, top-3
+  share) and return correlations, plus equal- and cap-weighted basket volatility. The basket
+  builder recomputes any selection client-side from the shipped covariance matrix.
+- **Serving** (`app/industry/service.py`): stale-while-revalidate, with the cache warmed at
+  startup. In live mode a company NSE can't serve is shown as unavailable and is never
+  back-filled. Demo mode serves `sample_data/industry_snapshots/`, a real NSE snapshot
+  labelled with its capture date.
+
+API: `GET /api/industries`, `GET /api/industries/{id}[?refresh=true]`. Each company links to the
+verified deep dive below for news and risk research. (The deep dive is a separate pipeline and
+still uses web search, SEC EDGAR and yfinance as its sources, each labelled per claim.)
 
 ## 4. Retrieval-Augmented Generation
 

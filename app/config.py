@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     max_research_queries: int = 12
     max_subqueries_per_plan: int = 6
 
+    # Industry dashboard (app/industry): snapshots older than this are served
+    # immediately but refreshed in the background (stale-while-revalidate).
+    industry_cache_ttl_seconds: int = 900
+    industry_cache_dir: str = str(BASE_DIR / "data" / "industry_cache")
+
     # App
     app_host: str = "0.0.0.0"
     app_port: int = 8000
