@@ -79,8 +79,8 @@ storage layer with distinct `source` / `claim` / `evidence` / `verification_resu
   indexed in an ephemeral per-source FAISS store; the Claim Extractor retrieves the chunks
   most relevant to what the research plan actually asked about instead of a fixed-prefix cut
   — see `app/rag/indexer.py` and section 4 below
-- **Storage**: SQLite (via SQLAlchemy), with a repository layer separating sources / claims /
-  evidence / verification results / conflicts / research runs / reports
+- **Database**: PostgreSQL 16 + pgvector (Docker locally; Neon/Supabase when deployed), via
+  SQLAlchemy with Alembic migrations. SQLite remains as a zero-setup fallback and for tests.
 - **Frontend**: React 18 + TypeScript + Vite, served from the FastAPI app's built `frontend/dist` bundle
 - **Testing**: pytest, with a fully mocked end-to-end path (no live API dependency)
 - **Deployment**: Docker / docker-compose
@@ -115,54 +115,67 @@ behind it, and shows a live NSE ticker, both served by the public `GET /api/publ
 - Settings: `USER_SESSION_DAYS` (default 7), `DEMO_SESSION_HOURS` (2), `SESSION_COOKIE_SECURE`
   (set `true` behind HTTPS).
 
+## Database: the source of truth
+
+VeriFi delivers **verified financial information and documents**, with no market or trading
+data. All of it lives in our own database, and every question is answered from the database
+first. The source API is only contacted for what the database doesn't have yet, and whatever it
+returns is stored.
+
+**PostgreSQL 16 + pgvector.** Locally it runs in Docker as the `verifi-db` container on port
+**5434**, so it doesn't clash with other local Postgres instances. When you deploy, point
+`DATABASE_URL` at a hosted Postgres (Neon or Supabase, both free and both with pgvector); no
+code changes. Alembic migrations (`migrations/`) own the schema and are applied automatically
+on startup.
+
+| Table | Holds |
+|---|---|
+| `companies` | Each company, and when its data was last checked against the source |
+| `documents` | Every source document: quarterly results today; annual reports and IPO prospectuses next. Each row records its origin, filing date and checksum, so nothing is stored twice |
+| `financial_facts` | **One row per number** (company, metric, period, value, unit), pointing to its document, with `origin` (xbrl / manual / pdf_extracted) and `verification_status` (verified / corrected / unverified). Every Number Has a Story: the story is these columns |
+| `ingestion_runs` | An audit log of every sync and upload: what changed, and any error |
+| `users`, `sessions` | Accounts (`role`: viewer or admin) and login sessions |
+| `research_runs`, `sources`, `claims`, `evidence`, `verification_results`, `conflicts`, `reports` | The verified deep-dive pipeline |
+
+**How a request is answered**, for the industry view (`app/industry/service.py`):
+1. It is always computed from the database, in about 50 ms for all ten companies (three queries).
+2. A company with nothing stored is fetched from the source first (first visit only), then stored.
+3. A company whose data is older than `FILINGS_SYNC_HOURS` (default 12) is served from the
+   database immediately while a background sync checks for new filings. The sync downloads
+   only filings the database doesn't hold (`app/datastore/sync.py`).
+
+Offline (`DEMO_MODE=true`) the source is never contacted, and the database is filled from
+`sample_data/filings_seed/`, which holds real parsed filings.
+
+**Management commands:**
+```bash
+docker compose up -d db                 # start the database (dev.ps1 does this for you)
+python -m app.cli status                # what the database holds
+python -m app.cli sync [--all]          # fetch new filings now
+python -m app.cli make-admin EMAIL      # let a user upload and edit data
+python -m app.cli import-sqlite [PATH]  # copy an old SQLite database in (safe to re-run)
+alembic revision --autogenerate -m "…"  # after changing app/storage/models.py
+```
+
 ## Industry Dashboard (NIFTY IT)
 
-The landing view compares India's ten largest listed IT companies, the NIFTY IT constituents:
-TCS, Infosys, HCLTech, Wipro, Tech Mahindra, LTIMindtree, Persistent, Coforge, Mphasis and
-OFSS. It makes **no LLM calls**, so it answers in milliseconds from cache (~5-10s for a forced
-live refresh of all ten).
+The landing view compares India's ten largest listed IT companies (the NIFTY IT constituents)
+on **reported financials only**: revenue, net profit, growth, operating and net margin, EPS, and
+each company's share of industry revenue. It makes no LLM calls and uses no market data.
 
-**Data comes only from NSE India, the exchange.** No third-party aggregator or estimate is
-used:
-
-| Figure | Official source |
-|---|---|
-| Revenue, net profit, EPS, operating profit, shares in issue | Each company's consolidated quarterly results **XBRL filed with NSE** ("Integrated Filing - Financials") |
-| Price, 1-year return, volatility, correlations | NSE security-wise daily closes, adjusted for splits and bonuses |
-| Latest close cross-check | NSE end-of-day **bhavcopy** file |
-| Dividend yield, split/bonus adjustments | NSE corporate actions |
-
-Yahoo Finance was used originally and was dropped after measurement showed several problems.
-Its prices were a day stale. It omitted whole quarters (Sep-2025 for 8 of the 10 companies).
-It reported Infosys in USD, which overstated INR revenue by ~5% after conversion. Metrics NSE
-doesn't publish (ROE, headcount, analyst targets, forward P/E) were removed rather than sourced
-elsewhere.
-
+- **Source:** each company's consolidated quarterly results XBRL as filed with the exchange,
+  stored in the database. Yahoo Finance was used originally and was dropped: its figures
+  were stale, it omitted whole quarters, and it reported Infosys in USD.
 - **Universe as data**: `sample_data/industries.json`. Adding an industry is a JSON edit.
-- **NSE client** (`app/industry/nse.py`): a browser-impersonating session (NSE rejects plain
-  HTTP clients). Parsed filings are cached permanently under `data/industry_cache/filings/`,
-  because an exchange filing never changes once published.
 - **Consistency checks** (`app/industry/analytics.py`), deterministic with no LLM:
-  - The four quarterly filings of the last fiscal year must add up to that year's annual
-    figures (revenue and profit).
-  - The reported EPS must match net profit ÷ shares in issue.
-  - The latest close must match NSE's bhavcopy.
-- **Filing corrections are shown, never hidden.** Companies occasionally mis-tag their own
-  XBRL. For example, Tech Mahindra's Dec-2025 filing tags owners' profit as Rs 198.7 Cr when
-  its own total profit less minority interest is Rs 1,113.5 Cr. The accounting identity is
-  applied and a note appears in that company's panel. A quarter tagged with the wrong dates is
-  shown as unavailable rather than guessed.
-- **Diversification**: market-cap concentration (HHI, effective number of companies, top-3
-  share) and return correlations, plus equal- and cap-weighted basket volatility. The basket
-  builder recomputes any selection client-side from the shipped covariance matrix.
-- **Serving** (`app/industry/service.py`): stale-while-revalidate, with the cache warmed at
-  startup. In live mode a company NSE can't serve is shown as unavailable and is never
-  back-filled. Demo mode serves `sample_data/industry_snapshots/`, a real NSE snapshot
-  labelled with its capture date.
+  - The four quarterly filings of a fiscal year must add up to that year's annual figures.
+  - Reported EPS must be consistent with net profit and shares in issue.
+- **Filing corrections are shown, never hidden.** For example, Tech Mahindra's Dec-2025 filing
+  tags owners' profit as Rs 198.7 Cr against its own total profit less minority interest of
+  Rs 1,113.5 Cr. The accounting identity is applied, the fact is stored as `corrected` with
+  the reason, and a note appears in the company panel.
 
-API: `GET /api/industries`, `GET /api/industries/{id}[?refresh=true]`. Each company links to the
-verified deep dive below for news and risk research. (The deep dive is a separate pipeline and
-still uses web search, SEC EDGAR and yfinance as its sources, each labelled per claim.)
+API: `GET /api/industries`, `GET /api/industries/{id}[?refresh=true]`.
 
 ## 4. Retrieval-Augmented Generation
 

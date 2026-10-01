@@ -36,25 +36,25 @@ function TipRows({ title, rows }: { title: string; rows: [string, string][] }) {
   return <><strong>{title}</strong>{rows.map(([k, v]) => <span key={k}><em>{k}</em>{v}</span>)}</>;
 }
 
-// ---- Market-cap share bars ----------------------------------------------------
+// ---- Revenue share bars ----------------------------------------------------
 
 export function ShareBars({ companies, selected, onSelect }: { companies: CompanyMetrics[]; selected?: string | null; onSelect: (symbol: string) => void }) {
   const tip = useTooltip();
-  const rows = companies.filter((c) => c.market_cap_weight != null).sort((a, b) => (b.market_cap_weight ?? 0) - (a.market_cap_weight ?? 0));
-  const max = Math.max(...rows.map((c) => c.market_cap_weight ?? 0), 0.0001);
+  const rows = companies.filter((c) => c.revenue_share != null).sort((a, b) => (b.revenue_share ?? 0) - (a.revenue_share ?? 0));
+  const max = Math.max(...rows.map((c) => c.revenue_share ?? 0), 0.0001);
   let cumulative = 0;
   return (
     <div className="share-bars" ref={tip.ref}>
       {rows.map((c) => {
-        cumulative += c.market_cap_weight ?? 0;
+        cumulative += c.revenue_share ?? 0;
         const cum = cumulative;
         return (
           <button type="button" key={c.symbol} className={`share-row ${selected === c.symbol ? "selected" : ""}`} onClick={() => onSelect(c.symbol)}
-            onMouseMove={(e) => tip.show(e, <TipRows title={c.name} rows={[["Market cap", inr(c.market_cap)], ["Sector weight", pct(c.market_cap_weight)], ["Cumulative", pct(cum, 0)]]} />)}
-            onMouseLeave={tip.hide} onFocus={(e) => tip.show(e, <TipRows title={c.name} rows={[["Sector weight", pct(c.market_cap_weight)]]} />)} onBlur={tip.hide}>
+            onMouseMove={(e) => tip.show(e, <TipRows title={c.name} rows={[["Revenue (TTM)", inr(c.revenue_ttm)], ["Share of industry", pct(c.revenue_share)], ["Cumulative", pct(cum, 0)]]} />)}
+            onMouseLeave={tip.hide} onFocus={(e) => tip.show(e, <TipRows title={c.name} rows={[["Share of industry", pct(c.revenue_share)]]} />)} onBlur={tip.hide}>
             <span className="share-name">{c.short_name}</span>
-            <span className="share-track"><span className="share-fill" style={{ width: `${((c.market_cap_weight ?? 0) / max) * 100}%` }} /></span>
-            <span className="share-value">{pct(c.market_cap_weight)}</span>
+            <span className="share-track"><span className="share-fill" style={{ width: `${((c.revenue_share ?? 0) / max) * 100}%` }} /></span>
+            <span className="share-value">{pct(c.revenue_share)}</span>
           </button>
         );
       })}
@@ -109,61 +109,15 @@ export function DotStrip({ metric, companies, selected, onSelect }: { metric: Me
   );
 }
 
-// ---- Correlation heatmap ----------------------------------------------------------
-
-// Sequential single-hue ramp (blue 100 -> 700 of the reference data-viz palette).
-const RAMP = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b"];
-
-function rampColor(t: number) {
-  const i = Math.min(RAMP.length - 1, Math.max(0, Math.round(t * (RAMP.length - 1))));
-  return { bg: RAMP[i], ink: i >= 7 ? "#ffffff" : "#0d2b3e" };
-}
-
-export function CorrelationHeatmap({ symbols, names, matrix, highlight }: { symbols: string[]; names: Record<string, string>; matrix: (number | null)[][]; highlight?: string | null }) {
-  const tip = useTooltip();
-  const off = matrix.flatMap((row, i) => row.filter((_, j) => j !== i)).filter((v): v is number => v != null);
-  const lo = Math.min(...off, 0), hi = Math.max(...off, 1);
-  return (
-    <div className="heatmap-wrap" ref={tip.ref}>
-      <div className="heatmap" style={{ gridTemplateColumns: `minmax(64px,auto) repeat(${symbols.length}, minmax(30px,1fr))` }} role="table" aria-label="Pairwise correlation of daily returns">
-        <span className="hm-corner" />
-        {symbols.map((s) => <span key={`c-${s}`} className={`hm-col ${highlight === s ? "hl" : ""}`} role="columnheader">{names[s]}</span>)}
-        {symbols.map((row, i) => (
-          <div className="hm-row" role="row" key={row} style={{ display: "contents" }}>
-            <span className={`hm-rowhead ${highlight === row ? "hl" : ""}`} role="rowheader">{names[row]}</span>
-            {symbols.map((col, j) => {
-              const v = matrix[i]?.[j];
-              if (i === j || v == null) return <span key={col} className="hm-cell diag" role="cell" aria-label="same company" />;
-              const { bg, ink } = rampColor((v - lo) / (hi - lo || 1));
-              const dim = highlight && highlight !== row && highlight !== col;
-              return (
-                <span key={col} role="cell" tabIndex={0} className={`hm-cell ${dim ? "dim" : ""}`} style={{ background: bg, color: ink }}
-                  onMouseEnter={(e) => tip.show(e, <TipRows title={`${names[row]} × ${names[col]}`} rows={[["Correlation", v.toFixed(2)]]} />)}
-                  onMouseLeave={tip.hide} onFocus={(e) => tip.show(e, <TipRows title={`${names[row]} × ${names[col]}`} rows={[["Correlation", v.toFixed(2)]]} />)} onBlur={tip.hide}>
-                  {v.toFixed(2).replace(/^0/, "")}
-                </span>
-              );
-            })}
-          </div>
-        ))}
-      </div>
-      <div className="hm-legend" aria-hidden="true">
-        <span>{lo.toFixed(2)} · moves more independently</span>
-        <span className="hm-legend-bar" style={{ background: `linear-gradient(90deg, ${RAMP[0]}, ${RAMP[6]}, ${RAMP[12]})` }} />
-        <span>moves together · {hi.toFixed(2)}</span>
-      </div>
-      {tip.node}
-    </div>
-  );
-}
-
 // ---- Quarterly revenue bars --------------------------------------------------------
 
-export function QuarterBars({ quarters }: { quarters: QuarterPoint[] }) {
+/** scaleMax: pass a shared maximum when several companies are shown side by
+ * side, so bar heights are comparable across charts (not each self-scaled). */
+export function QuarterBars({ quarters, scaleMax }: { quarters: QuarterPoint[]; scaleMax?: number }) {
   const tip = useTooltip();
   const pts = quarters.filter((q) => q.revenue != null);
   if (!pts.length) return <p className="muted-note">No quarterly statements reported.</p>;
-  const max = Math.max(...pts.map((q) => q.revenue!));
+  const max = scaleMax ?? Math.max(...pts.map((q) => q.revenue!));
   const label = (d: string) => new Date(d).toLocaleDateString("en-IN", { month: "short", year: "2-digit" });
   // The provider sometimes omits a quarter; show the hole rather than
   // letting neighbouring bars close up and imply continuity.

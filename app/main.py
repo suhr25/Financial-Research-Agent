@@ -23,13 +23,13 @@ logger = logging.getLogger("financial_research_agent")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    if not settings.effective_demo_mode:
-        # Warm the industry cache so the first dashboard visit is instant.
-        from app.industry.service import IndustryService
-        from app.industry.universe import list_industries
+    # Fill/refresh the financial data store in the background, so the first
+    # dashboard visit is answered straight from the database.
+    from app.industry.service import IndustryService
+    from app.industry.universe import list_industries
 
-        for industry in list_industries():
-            IndustryService().refresh_in_background(industry.id)
+    for industry in list_industries():
+        IndustryService().refresh_in_background(industry.id)
     logger.info(
         "Startup complete. demo_mode=%s llm_provider=%s llm_available=%s",
         settings.effective_demo_mode,

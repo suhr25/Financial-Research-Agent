@@ -95,3 +95,8 @@
 .hero-note { padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 
 .view-anim { animation: panel-in 320ms var(--ease); }
+
+/* Research report financials, grouped by company */
+.fin-entity { margin-top: 18px; }
+.fin-entity-name { margin: 0; padding-bottom: 8px; border-bottom: 1px solid #e8f0ed; color: var(--ink); font: 600 15px "Space Grotesk", sans-serif; }
+.fin-entity .fin-grid { margin-top: 12px; }

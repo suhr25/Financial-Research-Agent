@@ -66,6 +66,35 @@ evidence was found.
 """
 
 
+_RISK_WORDS = ("risk", "threat", "headwind", "uncertain", "challenge", "exposure", "adverse", "litigation", "slowdown")
+
+
+def is_risk_claim(claim: Claim) -> bool:
+    """A qualitative claim about a risk - recognised by its label or its
+    wording, since the extractor doesn't always use the exact label."""
+    if claim.metric == "risk_factor":
+        return True
+    if str(claim.claim_type) != "qualitative":
+        return False
+    text = f"{claim.metric} {claim.statement}".lower()
+    return any(w in text for w in _RISK_WORDS)
+
+
+_BOILERPLATE = ("misstatement", "audit procedures", "auditor's responsibilit", "auditors' responsibilit",
+                "reasonable assurance", "forward-looking statements", "investing in our ads")
+
+
+def is_presentable_risk(claim: Claim) -> bool:
+    """A risk worth showing: a complete sentence of real content - not a
+    search-snippet fragment ("constant currency growth is ...") and not
+    auditor / securities boilerplate (measured: an auditor's sentence about
+    fraud-detection risk was extracted as an Infosys business risk)."""
+    text = (claim.statement or "").strip()
+    if len(text.split()) < 6 or text.endswith(("...", "\u2026")):
+        return False
+    return not any(b in text.lower() for b in _BOILERPLATE)
+
+
 class ReportGenerator:
     def __init__(self, llm: LLMProvider | None = NOT_GIVEN):
         self.llm = get_llm_provider() if llm is NOT_GIVEN else llm
@@ -146,7 +175,7 @@ class ReportGenerator:
             [c for c in supported if c.claim_type == ClaimType.NUMERIC and c.metric in FINANCIAL_PERFORMANCE_METRICS]
         )
         financial = sorted(financial, key=lambda c: c.confidence or 0, reverse=True)[:3]
-        risk_claims = [c for c in supported if c.metric == "risk_factor"]
+        risk_claims = [c for c in supported if is_risk_claim(c)]
         risk_claim = max(risk_claims, key=lambda c: c.confidence or 0) if risk_claims else None
 
         used = list(financial)
@@ -200,10 +229,18 @@ class ReportGenerator:
         return ReportSection(title="Key Metrics", content="\n".join(lines), claim_ids=[c.claim_id for c in best])
 
     def _build_risks(self, supported: list[Claim]) -> ReportSection:
-        risk_claims = [c for c in supported if c.metric == "risk_factor"]
+        risk_claims = [c for c in supported if is_risk_claim(c) and is_presentable_risk(c)]
         if not risk_claims:
             return ReportSection(title="Risks", content="No verified risk factors were found in retrieved sources.", claim_ids=[])
-        lines = [f"- {c.value}" for c in risk_claims]
+        # The full sentence (statement), not the short `value` - which can be
+        # empty or a fragment. Duplicates (same sentence from two sources) once.
+        seen: set[str] = set()
+        lines = []
+        for c in risk_claims:
+            text = c.statement.strip().rstrip(".") + "."
+            if text.lower() not in seen:
+                seen.add(text.lower())
+                lines.append(f"- {text}")
         return ReportSection(title="Risks", content="\n".join(lines), claim_ids=[c.claim_id for c in risk_claims])
 
     def _build_important_findings(self, contradicted: list[Claim], insufficient: list[Claim]) -> ReportSection:

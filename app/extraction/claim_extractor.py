@@ -80,7 +80,11 @@ Extract two kinds of claims:
   cash, and similar financial metrics, with their value, unit, period and basis (GAAP /
   non-GAAP / adjusted) if stated or implied by nearby text.
 - qualitative claims: major risks, strategic changes, management commentary, business
-  developments.
+  developments. For qualitative claims set `metric` to one of: "risk_factor" (any risk,
+  threat, headwind or uncertainty), "strategy", "business_development",
+  "management_commentary". A qualitative claim must be a complete, self-contained sentence
+  about the company's business; skip truncated text (ending in "...") and auditor or legal
+  boilerplate (audit procedures, misstatement, forward-looking-statement disclaimers).
 
 IMPORTANT on `period`: the user's originally requested period (given below) is background
 context for what the user is interested in - it is NOT necessarily what this specific source
@@ -178,11 +182,29 @@ class ClaimExtractor:
             source = sources[idx]
             evidence = make_evidence(source, draft.quoted_evidence)
             if evidence is None:
+                # The model sometimes cites the wrong SOURCE number for a quote
+                # (measured: risk sentences from a news article attributed to
+                # the database document). The quote may be re-attributed to the
+                # source that really contains it - verbatim - but only one about
+                # the same company: re-matching across companies could turn a
+                # sentence about one company into a claim about another.
+                for other in sources:
+                    if other is source or not _same_company(draft.entity, other, plan):
+                        continue
+                    found = make_evidence(other, draft.quoted_evidence)
+                    if found is not None:
+                        logger.info("Re-attributed quote from source %s to %s (found verbatim there)",
+                                    source.source_id, other.source_id)
+                        source, evidence = other, found
+                        break
+            if evidence is None:
                 logger.warning(
                     "Discarding LLM-extracted claim with unlocatable evidence quote in source=%s: %r",
                     source.source_id, draft.quoted_evidence[:120],
                 )
                 continue
+            if draft.claim_type == ClaimType.QUALITATIVE:
+                evidence = expand_to_sentence(source, evidence)
             claims.append(_build_claim(research_run_id, source, draft, evidence))
         return claims
 
@@ -235,7 +257,51 @@ class ClaimExtractor:
         return claims
 
 
+def _same_company(entity: str, source: Source, plan: ResearchPlan) -> bool:
+    """Whether `source` is about the company a claim names. Sources are
+    tagged with the company they were retrieved for; an untagged source
+    only counts in a single-company plan."""
+    tag = (source.metadata.get("company_name") or "").lower()
+    name = (entity or "").lower()
+    if not tag:
+        return len(plan.companies) <= 1
+    return bool(name) and (name in tag or tag in name)
+
+
+MAX_SENTENCE_CHARS = 400
+
+
+def expand_to_sentence(source: Source, evidence: Evidence) -> Evidence:
+    """Widens a quote that starts or ends mid-sentence to the whole sentence
+    around it, in the source's own words. Measured: the model quoted
+    "which may reduce revenues from certain traditional services..." - the
+    second half of a risk sentence - which reads as a fragment. Still
+    verbatim source text; nothing is added that the source doesn't say."""
+    text = source.document_text
+    start, end = evidence.start_char, evidence.end_char
+    terminators = ".!?\n"
+    s = start
+    while s > 0 and text[s - 1] not in terminators and start - s < MAX_SENTENCE_CHARS:
+        s -= 1
+    e = end
+    while e < len(text) and text[e - 1] not in terminators and e - end < MAX_SENTENCE_CHARS:
+        e += 1
+    while s < e and text[s].isspace():
+        s += 1
+    while e > s and text[e - 1].isspace():
+        e -= 1
+    if (s, e) == (start, end) or e - s > 2 * MAX_SENTENCE_CHARS:
+        return evidence
+    return Evidence(source_id=evidence.source_id, start_char=s, end_char=e, evidence_text=text[s:e])
+
+
 def _build_claim(research_run_id: str, source: Source, draft: _ExtractedClaimDraft, evidence: Evidence) -> Claim:
+    statement = draft.statement
+    # A qualitative claim's statement is its (now complete) source sentence
+    # when the model just echoed a fragment of it.
+    if draft.claim_type == ClaimType.QUALITATIVE and draft.statement.strip() in evidence.evidence_text \
+            and draft.statement.strip() != evidence.evidence_text:
+        statement = evidence.evidence_text
     return Claim(
         research_run_id=research_run_id,
         claim_type=draft.claim_type,
@@ -247,7 +313,7 @@ def _build_claim(research_run_id: str, source: Source, draft: _ExtractedClaimDra
         basis=draft.basis,
         source_id=source.source_id,
         evidence_span=evidence,
-        statement=draft.statement,
+        statement=statement,
     )
 
 

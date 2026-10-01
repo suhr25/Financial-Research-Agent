@@ -158,10 +158,17 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => fetchJson<HealthResponse>("/api/health"),
-  startResearch: (query: string) => fetchJson<ResearchRun>("/api/research", {
+  // Database first: answered instantly from stored, verified filings, or
+  // answered=false when the database can't answer (then startResearch).
+  answer: (query: string) => fetchJson<DatabaseAnswer | NotAnswered>("/api/answer", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query }),
+  }),
+  startResearch: (query: string, fresh = false) => fetchJson<ResearchRun>("/api/research", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, fresh }),
   }),
   research: (id: string) => fetchJson<ResearchRun>(`/api/research/${id}`),
   claims: (id: string) => fetchJson<Claim[]>(`/api/research/${id}/claims`),
@@ -215,10 +222,7 @@ export interface CompanyMetrics {
   tier: string;
   available: boolean;
   error?: string | null;
-  price?: number | null;
-  price_date?: string | null;
   shares_outstanding?: number | null;
-  market_cap?: number | null;
   revenue_ttm?: number | null;
   net_income_ttm?: number | null;
   eps_ttm?: number | null;
@@ -226,13 +230,7 @@ export interface CompanyMetrics {
   earnings_growth_yoy?: number | null;
   operating_margin?: number | null;
   profit_margin?: number | null;
-  pe_trailing?: number | null;
-  dividends_ttm?: number | null;
-  dividend_yield?: number | null;
-  return_1y?: number | null;
-  volatility_1y?: number | null;
-  max_drawdown_1y?: number | null;
-  market_cap_weight?: number | null;
+  revenue_share?: number | null;
   latest_quarter?: string | null;
   quarters: QuarterPoint[];
   checks: CrossCheck[];
@@ -251,16 +249,6 @@ export interface MetricAggregate {
   count: number;
 }
 
-export interface PairCorrelation { a: string; b: string; correlation: number }
-
-export interface PortfolioStats {
-  label: string;
-  expected_return?: number | null;
-  volatility?: number | null;
-  diversification_ratio?: number | null;
-  volatility_reduction?: number | null;
-}
-
 export interface IndustrySnapshot {
   industry: IndustrySummary;
   mode: "live" | "demo";
@@ -269,29 +257,17 @@ export interface IndustrySnapshot {
   fetch_seconds?: number | null;
   stale: boolean;
   refreshing: boolean;
-  price_date?: string | null;
+  synced_at?: string | null;
   source: string;
   companies: CompanyMetrics[];
   aggregates: Record<string, MetricAggregate>;
   concentration: {
-    total_market_cap?: number | null;
+    total_revenue?: number | null;
     hhi?: number | null;
     effective_companies?: number | null;
     top3_share?: number | null;
     largest?: string | null;
     largest_share?: number | null;
-  };
-  diversification: {
-    symbols: string[];
-    lookback_days: number;
-    correlation: (number | null)[][];
-    covariance: (number | null)[][];
-    annual_returns: (number | null)[];
-    average_pairwise_correlation?: number | null;
-    equal_weight?: PortfolioStats | null;
-    market_cap_weight?: PortfolioStats | null;
-    least_correlated: PairCorrelation[];
-    most_correlated: PairCorrelation[];
   };
   insights: { kind: string; title: string; detail: string }[];
   warnings: string[];
@@ -345,3 +321,48 @@ export interface PublicOverview {
 export const publicApi = {
   overview: () => fetchJson<PublicOverview>("/api/public/overview"),
 };
+
+// ---- Answers from the database ---------------------------------------------------
+
+export interface ComparisonRow {
+  metric: string;
+  label: string;
+  kind: "inr" | "pct" | "pct_signed" | "rupees";
+  values: Record<string, number | null>;
+  leader?: string | null;
+  note?: string | null;
+}
+
+export interface PeriodFigures {
+  found: boolean;
+  label: string;
+  period_end: string;
+  revenue?: number | null;
+  net_income?: number | null;
+  operating_profit?: number | null;
+  eps_diluted?: number | null;
+  filing_url?: string | null;
+  filed_at?: string | null;
+  message?: string | null;
+}
+
+export interface DatabaseAnswer {
+  answered: true;
+  answered_from: "database";
+  query: string;
+  intent: "company" | "comparison";
+  companies: CompanyMetrics[];
+  focus_metrics: string[];
+  period_label?: string | null;
+  period_figures: Record<string, PeriodFigures>;
+  comparison: ComparisonRow[];
+  summary: string[];
+  coverage: string;
+  wants_qualitative: boolean;
+  qualitative_terms: string[];
+  elapsed_ms: number;
+  synced_at?: string | null;
+  warnings: string[];
+}
+
+export interface NotAnswered { answered: false; reason: string }

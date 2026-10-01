@@ -95,9 +95,15 @@ class QueryPlanner:
     # ---- Real path -----------------------------------------------------
 
     def _llm_plan(self, query: str) -> ResearchPlan:
+        from datetime import date
+
+        today = date.today()
         extraction = self.llm.complete_json(
             system=PLANNER_SYSTEM_PROMPT,
-            user=f"User query: {query}",
+            # Without the date the model anchors searches to its training era
+            # (measured: sub-queries for "2023" reports in a 2026 run).
+            user=(f"Today's date is {today:%d %B %Y}. Unless the user names a period, target the most recent "
+                  f"reporting periods and use {today.year} in search queries.\nUser query: {query}"),
             schema_model=_PlannerLLMOutput,
         )
         companies = [self.resolver.resolve(name) for name in extraction.company_names]

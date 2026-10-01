@@ -43,9 +43,7 @@ def _rag_select(document_text: str, query: str, max_chars: int) -> str:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
-        add_start_index=True,  # records each chunk's offset in the original
-        # text, which is what lets us reassemble retrieved chunks back into
-        # document order below and trust they're verbatim substrings.
+        add_start_index=True,
     )
     docs = splitter.create_documents([document_text])
     if not docs:

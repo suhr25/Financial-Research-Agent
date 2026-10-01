@@ -1,57 +1,43 @@
-"""Deterministic industry analytics over official NSE data: per-company
-metrics from exchange filings and NSE prices, internal consistency
-checks, aggregates, market-cap concentration, and return-based
-diversification. Pure functions - no network, no LLM, no estimates - so
-every number is reproducible from the filings it links to.
+"""Deterministic industry analytics over companies' reported financials.
+
+Every figure is computed from quarterly results as filed by the companies
+(read from the database): trailing-twelve-month totals, growth, margins,
+EPS, each company's share of industry revenue, and consistency checks
+between independently reported figures. Pure functions - no network, no
+LLM, no estimates, and no market data.
 """
 from __future__ import annotations
 
 import math
-from datetime import date, timedelta
+from datetime import date
 from statistics import mean, median
 from typing import Any
 
-import numpy as np
-import pandas as pd
-
-from app.industry.nse import CorporateAction, Filing
+from app.industry.nse import Filing
 from app.schemas.industry import (
     CompanyMetrics,
     Concentration,
     CrossCheck,
-    Diversification,
     IndustryCompanyRef,
     Insight,
     MetricAggregate,
-    PairCorrelation,
-    PortfolioStats,
     QuarterPoint,
 )
-
-TRADING_DAYS = 252
-# Minimum daily observations before a company's returns are trusted for
-# correlation/volatility (~6 months of trading).
-MIN_RETURN_OBSERVATIONS = 120
 
 # Metrics aggregated across the peer set, with whether higher is better
 # (drives leader/laggard). None = no natural direction (e.g. size).
 AGGREGATED_METRICS: dict[str, bool | None] = {
-    "market_cap": None,
     "revenue_ttm": None,
     "net_income_ttm": None,
     "revenue_growth_yoy": True,
     "earnings_growth_yoy": True,
     "operating_margin": True,
     "profit_margin": True,
-    "pe_trailing": False,
-    "dividend_yield": True,
-    "return_1y": True,
-    "volatility_1y": False,
-    "max_drawdown_1y": True,
+    "eps_ttm": None,
 }
-# Ratios averaged by market-cap weight as well as plainly - a sector's
-# "typical" margin is better described by its large constituents.
-WEIGHTED_METRICS = {"revenue_growth_yoy", "earnings_growth_yoy", "operating_margin", "profit_margin", "dividend_yield"}
+# Ratios also averaged weighted by revenue - equivalent to the margin of the
+# industry taken as a whole.
+WEIGHTED_METRICS = {"revenue_growth_yoy", "earnings_growth_yoy", "operating_margin", "profit_margin"}
 
 
 def num(value: Any) -> float | None:
@@ -70,29 +56,6 @@ def num(value: Any) -> float | None:
 
 def _days(a: str, b: str) -> int:
     return abs((date.fromisoformat(a) - date.fromisoformat(b)).days)
-
-
-def split_factor_after(actions: list[CorporateAction], when: date, until: date | None = None) -> float:
-    """Product of split/bonus factors with an ex-date after `when` (and on
-    or before `until`). Dividing a pre-split price or per-share figure by
-    this puts it on today's share basis."""
-    factor = 1.0
-    for a in actions:
-        if a.split_factor and a.ex_date > when and (until is None or a.ex_date <= until):
-            factor *= a.split_factor
-    return factor
-
-
-def adjusted_closes(closes: list[tuple[date, float]], actions: list[CorporateAction]) -> pd.Series:
-    """NSE closes are as-traded; a bonus or split would otherwise show as a
-    fake crash. Earlier prices are divided by every later split factor."""
-    if not closes:
-        return pd.Series(dtype=float)
-    return pd.Series(
-        [price / split_factor_after(actions, day) for day, price in closes],
-        index=pd.DatetimeIndex([pd.Timestamp(day) for day, _ in closes]),
-        dtype=float,
-    )
 
 
 def trailing_four(filings: list[Filing], ending: str | None = None) -> list[Filing] | None:
@@ -136,23 +99,18 @@ def _check(metric: str, label: str, reported: float | None, recomputed: float | 
     )
 
 
-def build_company_metrics(
-    ref: IndustryCompanyRef,
-    filings: list[Filing],
-    closes: list[tuple[date, float]],
-    actions: list[CorporateAction],
-    bhavcopy_close: float | None,
-) -> CompanyMetrics:
-    """One company's metrics, computed only from its NSE filings (newest
-    first), its NSE daily closes and its NSE corporate actions."""
+def build_company_metrics(ref: IndustryCompanyRef, filings: list[Filing]) -> CompanyMetrics:
+    """One company's metrics, computed only from its stored quarterly
+    filings (newest first)."""
     metrics = CompanyMetrics(name=ref.name, short_name=ref.short_name, symbol=ref.symbol, nse=ref.nse, tier=ref.tier)
     if not filings:
         metrics.available = False
-        metrics.error = "No consolidated results filings found for this company."
+        metrics.error = "No reported results stored for this company yet."
         return metrics
 
     latest = filings[0]
     metrics.latest_quarter = latest.period_end
+    metrics.shares_outstanding = latest.shares
     metrics.quarters = [
         QuarterPoint(
             period_end=f.period_end, revenue=f.revenue, net_income=f.net_income, operating_profit=f.operating_profit,
@@ -160,20 +118,6 @@ def build_company_metrics(
         )
         for f in reversed(filings)
     ]
-
-    # ---- Price & size: NSE close x shares in issue from the latest filing ----
-    price_day = closes[-1][0] if closes else None
-    if closes:
-        metrics.price = closes[-1][1]
-        metrics.price_date = price_day.isoformat()
-        if len(closes) > 1:
-            metrics.previous_close = closes[-2][1] / split_factor_after(actions, closes[-2][0], price_day)
-    if latest.shares:
-        # Paid-up capital / face value is the share count at quarter end;
-        # a later bonus or split changes it, so carry those forward.
-        metrics.shares_outstanding = latest.shares * split_factor_after(actions, date.fromisoformat(latest.period_end), price_day)
-    if metrics.price and metrics.shares_outstanding:
-        metrics.market_cap = metrics.price * metrics.shares_outstanding
 
     # ---- Trailing twelve months: the four latest consecutive filings ----
     ttm = trailing_four(filings)
@@ -185,11 +129,7 @@ def build_company_metrics(
             metrics.operating_margin = op / metrics.revenue_ttm
         if metrics.net_income_ttm is not None and metrics.revenue_ttm:
             metrics.profit_margin = metrics.net_income_ttm / metrics.revenue_ttm
-        eps = [None if f.eps_diluted is None
-               else f.eps_diluted / split_factor_after(actions, date.fromisoformat(f.period_end), price_day) for f in ttm]
-        metrics.eps_ttm = _sum(eps)
-        if metrics.price and metrics.eps_ttm and metrics.eps_ttm > 0:
-            metrics.pe_trailing = metrics.price / metrics.eps_ttm
+        metrics.eps_ttm = _sum([f.eps_diluted for f in ttm])
 
     # ---- Growth: latest quarter vs. the same quarter a year earlier ----
     prior = _year_earlier(filings, latest.period_end)
@@ -197,15 +137,7 @@ def build_company_metrics(
         metrics.revenue_growth_yoy = _growth(latest.revenue, prior.revenue)
         metrics.earnings_growth_yoy = _growth(latest.net_income, prior.net_income)
 
-    # ---- Dividends with an ex-date in the 12 months to the price date ----
-    if price_day and metrics.price:
-        window_start = price_day - timedelta(days=365)
-        paid = [a.dividend / split_factor_after(actions, a.ex_date, price_day)
-                for a in actions if a.dividend and window_start < a.ex_date <= price_day]
-        metrics.dividends_ttm = sum(paid)
-        metrics.dividend_yield = metrics.dividends_ttm / metrics.price
-
-    # ---- Consistency checks between independently reported official figures ----
+    # ---- Consistency checks between independently reported figures ----
     fy = next((f for f in filings if f.annual_revenue is not None), None)
     fy_quarters = trailing_four(filings, fy.period_end) if fy else None
     fy_label = f"FY ending {fy.period_end}" if fy else "the latest fiscal year"
@@ -236,11 +168,6 @@ def build_company_metrics(
                "Net profit ÷ reported basic EPS gives a share count consistent with the shares in issue during the quarter (within {diff}%).",
                "Net profit ÷ reported basic EPS implies a share count {diff}% away from the shares in issue - usually treasury shares held by an employee trust.",
                "The filing doesn't report enough to recompute EPS."),
-        _check("price", "Closing price matches the official end-of-day file",
-               metrics.price, bhavcopy_close, 0.05,
-               f"The {metrics.price_date} close agrees with the official end-of-day file (within {{diff}}%).",
-               f"The {metrics.price_date} close differs from the official end-of-day file by {{diff}}%.",
-               "The official end-of-day file for this date wasn't available to compare."),
     ]
     for f in filings:
         for note in f.notes:
@@ -254,118 +181,29 @@ def build_company_metrics(
     return metrics
 
 
-# ---- Price-based statistics ------------------------------------------------
-
-
-def daily_returns(closes: pd.DataFrame) -> pd.DataFrame:
-    """Simple daily returns per symbol, dropping symbols with too little
-    history to say anything reliable about their risk."""
-    if closes is None or closes.empty:
-        return pd.DataFrame()
-    returns = closes.sort_index().pct_change(fill_method=None).iloc[1:]
-    keep = [c for c in returns.columns if returns[c].count() >= MIN_RETURN_OBSERVATIONS]
-    return returns[keep]
-
-
-def apply_price_stats(companies: list[CompanyMetrics], closes: pd.DataFrame) -> None:
-    if closes is None or closes.empty:
-        return
-    closes = closes.sort_index()
-    for company in companies:
-        if company.symbol not in closes.columns:
-            continue
-        series = closes[company.symbol].dropna()
-        if len(series) < MIN_RETURN_OBSERVATIONS:
-            continue
-        rets = series.pct_change().dropna()
-        company.return_1y = num(series.iloc[-1] / series.iloc[0] - 1)
-        company.volatility_1y = num(rets.std() * math.sqrt(TRADING_DAYS))
-        company.max_drawdown_1y = num((series / series.cummax() - 1).min())
-
-
-def _portfolio(label: str, weights: np.ndarray, mu: np.ndarray, cov: np.ndarray) -> PortfolioStats:
-    vols = np.sqrt(np.diag(cov))
-    port_vol = float(np.sqrt(weights @ cov @ weights))
-    avg_vol = float(weights @ vols)
-    return PortfolioStats(
-        label=label,
-        expected_return=num(weights @ mu),
-        volatility=num(port_vol),
-        diversification_ratio=num(avg_vol / port_vol) if port_vol else None,
-        volatility_reduction=num(1 - port_vol / avg_vol) if avg_vol else None,
-    )
-
-
-def compute_diversification(companies: list[CompanyMetrics], closes: pd.DataFrame) -> Diversification:
-    """Return-correlation view of the peer set: how much holding several
-    of these companies actually diversifies versus holding one.
-
-    Correlations/covariances come from overlapping daily returns only
-    (rows where every included symbol traded), annualised over 252
-    trading days. The covariance matrix is exposed so the frontend's
-    basket builder can recompute portfolio volatility for any selection
-    without another request."""
-    returns = daily_returns(closes).dropna(how="any")
-    if returns.shape[1] < 2 or len(returns) < MIN_RETURN_OBSERVATIONS:
-        return Diversification()
-
-    by_symbol = {c.symbol: c for c in companies}
-    symbols = [c.symbol for c in companies if c.symbol in returns.columns]
-    returns = returns[symbols]
-    corr = returns.corr().to_numpy()
-    cov = returns.cov().to_numpy() * TRADING_DAYS
-    mu = returns.mean().to_numpy() * TRADING_DAYS
-
-    n = len(symbols)
-    iu = np.triu_indices(n, k=1)
-    pairs = sorted(
-        (PairCorrelation(a=symbols[i], b=symbols[j], correlation=round(float(corr[i, j]), 4)) for i, j in zip(*iu)),
-        key=lambda p: p.correlation,
-    )
-
-    caps = np.array([by_symbol[s].market_cap or 0.0 for s in symbols])
-    cap_weights = caps / caps.sum() if caps.sum() > 0 else None
-
-    def matrix(m: np.ndarray) -> list[list[float | None]]:
-        return [[num(round(float(v), 6)) for v in row] for row in m]
-
-    return Diversification(
-        symbols=symbols,
-        lookback_days=len(returns),
-        correlation=matrix(corr),
-        covariance=matrix(cov),
-        annual_returns=[num(round(float(v), 6)) for v in mu],
-        average_pairwise_correlation=num(corr[iu].mean()),
-        equal_weight=_portfolio("Equal-weight basket", np.full(n, 1 / n), mu, cov),
-        market_cap_weight=_portfolio("Market-cap-weighted basket", cap_weights, mu, cov) if cap_weights is not None else None,
-        least_correlated=pairs[:3],
-        most_correlated=list(reversed(pairs[-3:])),
-    )
-
-
 # ---- Industry aggregates -----------------------------------------------------
 
 
-def compute_concentration(companies: list[CompanyMetrics]) -> Concentration:
-    """Market-cap concentration: each company's weight, the
+def compute_revenue_share(companies: list[CompanyMetrics]) -> Concentration:
+    """How the industry's revenue is split: each company's share, the
     Herfindahl-Hirschman index, and its reciprocal - the "effective number
-    of companies" the sector's value is really spread across."""
-    capped = [c for c in companies if c.market_cap]
-    total = sum(c.market_cap for c in capped)
+    of companies" the industry's revenue is really spread across."""
+    with_rev = [c for c in companies if c.revenue_ttm]
+    total = sum(c.revenue_ttm for c in with_rev)
     if not total:
         return Concentration()
-    for c in capped:
-        c.market_cap_weight = c.market_cap / total
-    weights = sorted((c.market_cap_weight for c in capped), reverse=True)
-    hhi = sum(w * w for w in weights)
-    largest = max(capped, key=lambda c: c.market_cap)
+    for c in with_rev:
+        c.revenue_share = c.revenue_ttm / total
+    shares = sorted((c.revenue_share for c in with_rev), reverse=True)
+    hhi = sum(s * s for s in shares)
+    largest = max(with_rev, key=lambda c: c.revenue_ttm)
     return Concentration(
-        total_market_cap=total,
+        total_revenue=total,
         hhi=hhi,
         effective_companies=1 / hhi if hhi else None,
-        top3_share=sum(weights[:3]),
+        top3_share=sum(shares[:3]),
         largest=largest.short_name,
-        largest_share=largest.market_cap_weight,
+        largest_share=largest.revenue_share,
     )
 
 
@@ -379,7 +217,7 @@ def compute_aggregates(companies: list[CompanyMetrics]) -> dict[str, MetricAggre
         values = [v for _, v in pts]
         weighted = None
         if metric in WEIGHTED_METRICS:
-            wpts = [(c.market_cap, v) for c, v in pts if c.market_cap]
+            wpts = [(c.revenue_ttm, v) for c, v in pts if c.revenue_ttm]
             wsum = sum(w for w, _ in wpts)
             weighted = sum(w * v for w, v in wpts) / wsum if wsum else None
         top = max(pts, key=lambda p: p[1])[0].short_name
@@ -401,22 +239,20 @@ def build_insights(
     companies: list[CompanyMetrics],
     aggregates: dict[str, MetricAggregate],
     concentration: Concentration,
-    diversification: Diversification,
 ) -> list[Insight]:
     """Plain-language takeaways, each derived from a specific computed
-    figure above - templated, not generated, so every sentence is
-    traceable to the numbers on the page."""
-    names = {c.symbol: c.short_name for c in companies}
+    figure - templated, not generated, so every sentence is traceable to
+    the numbers on the page."""
     by_short = {c.short_name: c for c in companies}
     out: list[Insight] = []
 
-    if concentration.total_market_cap:
+    if concentration.total_revenue:
+        n = sum(1 for c in companies if c.revenue_ttm)
         out.append(Insight(
             kind="concentration",
-            title=f"{concentration.largest} alone is {_pct(concentration.largest_share, 0)} of the sector",
-            detail=(f"The top three companies hold {_pct(concentration.top3_share, 0)} of combined market value. "
-                    f"Value behaves as if spread across {concentration.effective_companies:.1f} equal-sized companies, "
-                    f"not {sum(1 for c in companies if c.market_cap)} - a cap-weighted IT index is a concentrated bet."),
+            title=f"{concentration.largest} earns {_pct(concentration.largest_share, 0)} of the industry's revenue",
+            detail=(f"The three largest companies account for {_pct(concentration.top3_share, 0)} of combined revenue. "
+                    f"Revenue is spread as if across {concentration.effective_companies:.1f} equal-sized companies, not {n}."),
         ))
 
     growth = aggregates.get("revenue_growth_yoy")
@@ -436,46 +272,35 @@ def build_insights(
             kind="profitability",
             title=f"{lead.short_name} has the widest operating margin ({_pct(lead.operating_margin)})",
             detail=(f"Industry median is {_pct(margin.median)}"
-                    + (f", or {_pct(margin.weighted_mean)} weighted by market cap." if margin.weighted_mean is not None else ".")),
+                    + (f", or {_pct(margin.weighted_mean)} for the industry as a whole." if margin.weighted_mean is not None else ".")),
         ))
 
-    pe = aggregates.get("pe_trailing")
-    if pe and pe.count >= 2 and pe.median:
-        rich = by_short[pe.laggard]
-        cheap = by_short[pe.leader]
+    both = [c for c in companies if c.revenue_growth_yoy is not None and c.earnings_growth_yoy is not None]
+    if both:
+        ahead = [c.short_name for c in both if c.earnings_growth_yoy > c.revenue_growth_yoy]
         out.append(Insight(
-            kind="valuation",
-            title=f"{rich.short_name} trades at {rich.pe_trailing:.1f}× earnings vs. a {pe.median:.1f}× median",
-            detail=f"The cheapest on trailing earnings is {cheap.short_name} at {cheap.pe_trailing:.1f}×.",
+            kind="earnings",
+            title=f"Profit grew faster than revenue at {len(ahead)} of {len(both)} companies",
+            detail=("Latest quarter vs. the same quarter a year earlier. "
+                    + (f"Profit outpaced revenue at {', '.join(ahead)} - margins widened." if ahead
+                       else "Nowhere did profit outpace revenue - margins narrowed across the group.")),
         ))
 
-    ew = diversification.equal_weight
-    if ew and ew.volatility_reduction is not None and diversification.average_pairwise_correlation is not None:
-        low = diversification.least_correlated[0] if diversification.least_correlated else None
+    net = aggregates.get("profit_margin")
+    if net and net.count >= 2:
+        lead, lag = by_short[net.leader], by_short[net.laggard]
         out.append(Insight(
-            kind="diversification",
-            title=f"An equal-weight basket cuts volatility by {_pct(ew.volatility_reduction, 0)}",
-            detail=(f"Average pairwise return correlation is {diversification.average_pairwise_correlation:.2f}"
-                    + (f"; the least correlated pair is {names.get(low.a, low.a)} and {names.get(low.b, low.b)} ({low.correlation:.2f})." if low else ".")
-                    + " Stocks in one industry share the same demand cycle, so diversification within it has a ceiling."),
-        ))
-
-    vol = aggregates.get("volatility_1y")
-    if vol and vol.count >= 2:
-        risky = by_short[vol.laggard]
-        out.append(Insight(
-            kind="risk",
-            title=f"{risky.short_name} is the most volatile ({_pct(risky.volatility_1y, 0)} annualised)",
-            detail=(f"Its deepest 1-year drawdown was {_pct(risky.max_drawdown_1y, 0)}; "
-                    f"the industry median volatility is {_pct(vol.median, 0)}."),
+            kind="profitability",
+            title=f"{lead.short_name} keeps {_pct(lead.profit_margin)} of revenue as net profit",
+            detail=f"The median net margin is {_pct(net.median)}; {lag.short_name} is lowest at {_pct(lag.profit_margin)}.",
         ))
 
     verified = sum(1 for c in companies if c.verification_status == "verified")
     mismatched = [c.short_name for c in companies if c.verification_status == "mismatch"]
     out.append(Insight(
         kind="data",
-        title=f"{verified} of {len(companies)} companies pass every cross-check",
-        detail=("Quarterly filings were reconciled with each annual report, EPS with profit ÷ shares, and prices with the official end-of-day file. "
+        title=f"{verified} of {len(companies)} companies pass every consistency check",
+        detail=("Quarterly filings were reconciled with each annual report, and reported EPS with net profit and shares in issue. "
                 + (f"Review: {', '.join(mismatched)} - at least one figure disagrees beyond tolerance." if mismatched
                    else "No figure disagreed beyond tolerance.")),
     ))

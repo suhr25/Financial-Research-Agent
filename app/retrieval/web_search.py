@@ -9,6 +9,7 @@ web search gives no other reliable signal of publisher reputation.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import httpx
@@ -90,6 +91,35 @@ class TavilyProvider(SearchProvider):
             return MockSearchProvider().search(query, max_results)
 
 
+ARTICLE_TIMEOUT_SECONDS = 8
+MAX_ARTICLE_CHARS = 30_000
+
+
+def fetch_article_text(url: str | None) -> str | None:
+    """The readable main text of a web page (boilerplate, menus and ads
+    stripped by trafilatura), or None if it can't be fetched or extracted -
+    the caller then falls back to the search snippet. PDFs and other
+    non-HTML documents are skipped."""
+    if not url or url.lower().split("?")[0].endswith((".pdf", ".xls", ".xlsx", ".doc", ".docx", ".ppt", ".pptx")):
+        return None
+    try:
+        import trafilatura
+        from curl_cffi import requests as browser
+
+        # Browser-impersonating client: many company and news sites reject
+        # plain HTTP clients with 403 (measured: infosys.com).
+        resp = browser.get(url, timeout=ARTICLE_TIMEOUT_SECONDS, allow_redirects=True, impersonate="chrome")
+        if resp.status_code != 200 or "html" not in resp.headers.get("content-type", ""):
+            return None
+        text = trafilatura.extract(resp.text, include_comments=False, include_tables=False, favor_precision=True)
+        if not text or len(text) < 300:
+            return None
+        return text[:MAX_ARTICLE_CHARS]
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Couldn't fetch article text for %s (%s); using the search snippet", url, exc)
+        return None
+
+
 class SerpAPIProvider(SearchProvider):
     name = "serpapi"
 
@@ -112,11 +142,16 @@ class SerpAPIProvider(SearchProvider):
             )
             resp.raise_for_status()
             data = resp.json()
+            results = [r for r in data.get("organic_results", [])[:max_results] if r.get("snippet")]
+            # A search snippet is ~150 characters - too little to extract a
+            # complete risk or commentary sentence from (measured: every claim
+            # from snippets was a fragment). Fetch each result's article text;
+            # the RAG layer then picks the passages relevant to the question.
+            with ThreadPoolExecutor(max_workers=max(1, len(results))) as pool:
+                bodies = list(pool.map(lambda r: fetch_article_text(r.get("link")), results))
             sources = []
-            for r in data.get("organic_results", [])[:max_results]:
-                text = r.get("snippet") or ""
-                if not text:
-                    continue
+            for r, body in zip(results, bodies):
+                text = body or r.get("snippet") or ""
                 url = r.get("link")
                 sources.append(
                     Source(
@@ -126,7 +161,7 @@ class SerpAPIProvider(SearchProvider):
                         source_tier=_tier_for_url(url),
                         publisher=urlparse(url).netloc if url else "unknown",
                         document_text=text,
-                        metadata={"query": query},
+                        metadata={"query": query, "full_text": bool(body)},
                     )
                 )
             return sources

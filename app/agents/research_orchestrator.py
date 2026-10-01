@@ -29,6 +29,68 @@ from app.verification.verification_engine import VerificationEngine
 
 logger = logging.getLogger("financial_research_agent.agents.research_orchestrator")
 
+# Bump whenever the pipeline's sources change enough that earlier runs
+# shouldn't be reused (see ResearchRun.pipeline_version).
+PIPELINE_VERSION = 6
+
+
+_FINANCIAL_PURPOSES = ("revenue", "income", "profit", "margin", "eps", "earning", "debt", "cash", "ebitda", "growth", "financ")
+
+
+def focus_searches_on_what_the_database_lacks(plan: ResearchPlan, limit: int) -> ResearchPlan:
+    """For companies VeriFi holds, the database already has verified figures,
+    so web searches for revenue, margins, debt... are wasted budget (and,
+    measured, returned years-old reports). Those searches are replaced with
+    ones for what the database can't answer - the qualitative topics asked
+    about, recent risks and news - dated to the current year."""
+    from datetime import date
+
+    from app.industry.universe import find_universe_company
+    from app.schemas import SourceType, SubQuery
+
+    held = {c.name for c in plan.companies if c.resolved and find_universe_company(c.name)}
+    if not held:
+        return plan
+    year = date.today().year
+    kept = [sq for sq in plan.sub_queries
+            if not (sq.company in held or (sq.company is None and len(held) == 1))
+            or not any(p in sq.purpose.lower() for p in _FINANCIAL_PURPOSES)]
+    topics = (plan.risk_questions + plan.qualitative_questions)[:2]
+    added = []
+    for name in sorted(held):
+        added.append(SubQuery(text=f"{name} key business risks and challenges {year}", purpose="risks", company=name,
+                              target_source_types=[SourceType.WEB_ARTICLE]))
+        added += [SubQuery(text=f"{name} {t} {year}", purpose="qualitative", company=name,
+                           target_source_types=[SourceType.WEB_ARTICLE]) for t in topics]
+        added.append(SubQuery(text=f"{name} latest news {year}", purpose="news", company=name,
+                              target_source_types=[SourceType.WEB_ARTICLE]))
+    existing = {sq.text.lower() for sq in kept}
+    merged = kept + [sq for sq in added if sq.text.lower() not in existing]
+    return plan.model_copy(update={"sub_queries": merged[:max(limit, len(held) * 2)]})
+
+
+def prefer_database_numbers(claims: list[Claim], sources: list[Source]) -> list[Claim]:
+    """For a company VeriFi holds, the database is the authority on numbers:
+    numeric claims about it are kept only from its database source. Web
+    sources still contribute what the database doesn't hold - risks, news,
+    commentary (qualitative claims). Measured: without this, an Infosys run
+    mixed FY2023 revenue from a scribd.com upload in with the current
+    figures."""
+    from app.schemas import ClaimType
+
+    by_id = {s.source_id: s for s in sources}
+    held = {s.metadata.get("company_name") for s in sources if s.metadata.get("from_database")}
+    kept = []
+    for claim in claims:
+        src = by_id.get(claim.source_id)
+        if (claim.claim_type == ClaimType.NUMERIC and claim.entity in held
+                and not (src and src.metadata.get("from_database"))):
+            continue
+        kept.append(claim)
+    if len(kept) < len(claims):
+        logger.info("Dropped %d web-sourced numeric claims for companies held in the database", len(claims) - len(kept))
+    return kept
+
 
 class ResearchOrchestrator:
     def __init__(self, db: Session):
@@ -51,7 +113,7 @@ class ResearchOrchestrator:
         several minutes a paced, fully-real run can take (see PRD risk
         5.1.3 and app/llm/rate_limiter.py) - the frontend polls
         GET /research/{id} for live status instead."""
-        run = ResearchRun(query=query, status=ResearchStatus.PLANNING)
+        run = ResearchRun(query=query, status=ResearchStatus.PLANNING, pipeline_version=PIPELINE_VERSION)
         repo.save_research_run(self.db, run)
         logger.info("research_run_id=%s started query=%r", run.research_run_id, query)
         return self._execute(run)
@@ -61,7 +123,7 @@ class ResearchOrchestrator:
         and continues the actual pipeline in a background thread with its
         own DB session, so the caller gets a response - and a research_run_id
         to poll - right away instead of blocking on the full run."""
-        run = ResearchRun(query=query, status=ResearchStatus.PENDING)
+        run = ResearchRun(query=query, status=ResearchStatus.PENDING, pipeline_version=PIPELINE_VERSION)
         repo.save_research_run(self.db, run)
         logger.info("research_run_id=%s queued query=%r", run.research_run_id, query)
 
@@ -82,7 +144,7 @@ class ResearchOrchestrator:
     def _execute(self, run: ResearchRun) -> ResearchRun:
         try:
             self._touch(run, ResearchStatus.PLANNING)
-            plan = self.query_planner.plan(run.query)
+            plan = focus_searches_on_what_the_database_lacks(self.query_planner.plan(run.query), self.settings.max_subqueries_per_plan)
             run.plan = plan
             self._touch(run, ResearchStatus.RETRIEVING)
 
@@ -100,7 +162,7 @@ class ResearchOrchestrator:
 
             self._touch(run, ResearchStatus.EXTRACTING)
             claims = self.claim_extractor.extract(run.research_run_id, all_sources, plan)
-            claims = self.normalizer.normalize(claims)
+            claims = prefer_database_numbers(self.normalizer.normalize(claims), all_sources)
 
             self._touch(run, ResearchStatus.VERIFYING)
             verifications = self._verify_and_score(claims, all_sources)
@@ -169,7 +231,7 @@ class ResearchOrchestrator:
                 break
 
             new_claims = self.claim_extractor.extract(run.research_run_id, new_sources, plan)
-            new_claims = self.normalizer.normalize(new_claims)
+            new_claims = prefer_database_numbers(self.normalizer.normalize(new_claims), sources + new_sources)
             new_verifications = self._verify_and_score(new_claims, new_sources)
 
             claims = claims + new_claims

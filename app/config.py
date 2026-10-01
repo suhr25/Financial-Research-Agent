@@ -52,10 +52,13 @@ class Settings(BaseSettings):
     max_research_queries: int = 12
     max_subqueries_per_plan: int = 6
 
-    # Industry dashboard (app/industry): snapshots older than this are served
-    # immediately but refreshed in the background (stale-while-revalidate).
-    industry_cache_ttl_seconds: int = 900
-    industry_cache_dir: str = str(BASE_DIR / "data" / "industry_cache")
+    # Financial data store: a company's stored filings older than this are
+    # still served straight from the database, while a background sync checks
+    # the source API for newer filings (database first, API as fallback).
+    filings_sync_hours: int = 12
+    # A completed research run is reused for the same question asked again
+    # within this window, instead of re-running the whole pipeline.
+    research_reuse_hours: int = 72
 
     # Auth (app/auth): session cookie lifetimes. Set SESSION_COOKIE_SECURE=true
     # when serving over HTTPS so the cookie is never sent in clear text.

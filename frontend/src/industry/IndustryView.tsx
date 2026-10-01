@@ -9,21 +9,20 @@ import { ago, inr, pct, plain, times } from "../lib/format";
 import { useCountUp } from "../lib/motion";
 import { Tabs } from "../components/Tabs";
 import { Carousel } from "../components/Carousel";
-import { CorrelationHeatmap, DotStrip, QuarterBars, ShareBars } from "./charts";
+import { DotStrip, QuarterBars, ShareBars } from "./charts";
 import { DETAIL_METRICS, METRICS, POSITIONING_METRICS, TABLE_COLUMNS, median, rank, value, type MetricKey } from "./metrics";
 
-type View = "peers" | "positioning" | "concentration" | "diversification";
+type View = "peers" | "positioning" | "share";
 
 const VIEWS: { id: View; label: string; icon: typeof BarChart3 }[] = [
   { id: "peers", label: "Peer table", icon: BarChart3 },
   { id: "positioning", label: "Positioning", icon: Gauge },
-  { id: "concentration", label: "Concentration", icon: PieChart },
-  { id: "diversification", label: "Diversification", icon: Layers },
+  { id: "share", label: "Revenue share", icon: PieChart },
 ];
 
 const INSIGHT_ICON: Record<string, typeof BarChart3> = {
   concentration: PieChart, growth: TrendingUp, profitability: Wallet, valuation: Gauge,
-  diversification: Layers, risk: AlertTriangle, data: ShieldCheck,
+  earnings: Sparkles, data: ShieldCheck,
 };
 
 const fmtDate = (iso: string) => new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
@@ -70,7 +69,6 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
   }
 
   const agg = snap.aggregates;
-  const div = snap.diversification;
   const verified = companies.filter((c) => c.verification_status === "verified").length;
 
   return (
@@ -85,12 +83,12 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
           <span className={`data-pill ${snap.mode}`}>
             <span className={`status-dot ${snap.mode === "demo" ? "status-amber" : ""}`} />
             {snap.mode === "demo"
-              ? `Demo snapshot · captured ${new Date(snap.fetched_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}`
-              : snap.refreshing ? "Refreshing live data…" : `Live · updated ${ago(snap.fetched_at)}`}
+              ? "Offline · stored filings"
+              : snap.refreshing ? "Checking for new filings…" : `From the database · checked ${snap.synced_at ? ago(snap.synced_at + (snap.synced_at.endsWith("Z") ? "" : "Z")) : "—"}`}
           </span>
           {snap.mode === "live" && (
             <button type="button" className="button button-secondary" onClick={() => load(true)} disabled={busy}>
-              {busy ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />} Refresh
+              {busy ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />} Check for new filings
             </button>
           )}
         </div>
@@ -100,11 +98,11 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
       {snap.warnings.length > 0 && <div className="warn-strip"><AlertTriangle size={14} /><span>{snap.warnings.join(" · ")}</span></div>}
 
       <section className="kpi-row" aria-label="Industry summary">
-        <Kpi label="Sector market cap" num={snap.concentration.total_market_cap} fmt={inr} detail={`${companies.length} companies · ${snap.concentration.largest} ${pct(snap.concentration.largest_share, 0)}`} />
+        <Kpi label="Industry revenue (TTM)" num={snap.concentration.total_revenue} fmt={inr} detail={`${companies.length} companies · ${snap.concentration.largest} ${pct(snap.concentration.largest_share, 0)}`} />
         <Kpi label="Median revenue growth" num={agg.revenue_growth_yoy?.median} fmt={(v) => pct(v, 1, true)} detail={`range ${pct(agg.revenue_growth_yoy?.min, 0)} to ${pct(agg.revenue_growth_yoy?.max, 0)}`} />
-        <Kpi label="Median operating margin" num={agg.operating_margin?.median} fmt={(v) => pct(v)} detail={`${pct(agg.operating_margin?.weighted_mean)} cap-weighted`} />
-        <Kpi label="Median P/E" num={agg.pe_trailing?.median} fmt={times} detail={`${times(agg.pe_trailing?.min)} – ${times(agg.pe_trailing?.max)}`} />
-        <Kpi label="Basket volatility cut" num={div.equal_weight?.volatility_reduction} fmt={(v) => pct(v, 0)} detail={`avg correlation ${plain(div.average_pairwise_correlation)}`} />
+        <Kpi label="Median operating margin" num={agg.operating_margin?.median} fmt={(v) => pct(v)} detail={`${pct(agg.operating_margin?.weighted_mean)} industry-wide`} />
+        <Kpi label="Median net margin" num={agg.profit_margin?.median} fmt={(v) => pct(v)} detail={`${pct(agg.profit_margin?.weighted_mean)} industry-wide`} />
+        <Kpi label="Median profit growth" num={agg.earnings_growth_yoy?.median} fmt={(v) => pct(v, 1, true)} detail={`range ${pct(agg.earnings_growth_yoy?.min, 0)} to ${pct(agg.earnings_growth_yoy?.max, 0)}`} />
       </section>
 
       <section className="insights" aria-label="Key takeaways">
@@ -129,14 +127,12 @@ export function IndustryView({ industryId, onDeepDive }: { industryId: string; o
       <div className="result-panel panel-anim" key={view}>
         {view === "peers" && <PeerTable companies={companies} snap={snap} onSelect={setSelected} selected={selected} />}
         {view === "positioning" && <Positioning companies={companies} selected={selected} onSelect={setSelected} />}
-        {view === "concentration" && <ConcentrationPanel snap={snap} companies={companies} selected={selected} onSelect={setSelected} />}
-        {view === "diversification" && <DiversificationPanel snap={snap} companies={companies} selected={selected} />}
+        {view === "share" && <ConcentrationPanel snap={snap} companies={companies} selected={selected} onSelect={setSelected} />}
       </div>
 
       <p className="ind-footnote">
-        Financials from each company's latest consolidated results filings (links in each company's panel); prices as of the close on {snap.price_date ? fmtDate(snap.price_date) : "—"}.
-        {" "}{verified}/{companies.length} companies pass every consistency check.
-        Not investment advice.
+        Every figure comes from the companies' own reported quarterly results (consolidated), stored in the VeriFi database - each company's panel links to its source filings.
+        {" "}{verified}/{companies.length} companies pass every consistency check. Answered from the database in {snap.fetch_seconds != null ? Math.round(snap.fetch_seconds * 1000) : "—"} ms. Not investment advice.
       </p>
 
       {selectedCompany && <CompanyPanel company={selectedCompany} companies={companies} snap={snap} onClose={() => setSelected(null)} onDeepDive={onDeepDive} />}
@@ -169,7 +165,7 @@ function VerifyBadge({ status }: { status: CompanyMetrics["verification_status"]
 // ---- Peer table -------------------------------------------------------------------
 
 function PeerTable({ companies, snap, onSelect, selected }: { companies: CompanyMetrics[]; snap: IndustrySnapshot; onSelect: (s: string) => void; selected: string | null }) {
-  const [sortKey, setSortKey] = useState<MetricKey>("market_cap");
+  const [sortKey, setSortKey] = useState<MetricKey>("revenue_ttm");
   const [desc, setDesc] = useState(true);
   const rows = useMemo(() => [...companies].sort((a, b) => {
     const av = value(a, sortKey), bv = value(b, sortKey);
@@ -224,7 +220,7 @@ function PeerTable({ companies, snap, onSelect, selected }: { companies: Company
               {TABLE_COLUMNS.map((key) => {
                 const agg = snap.aggregates[key];
                 const med = agg?.median ?? median(companies.map((c) => value(c, key)).filter((v): v is number => v !== null));
-                return <td key={key} className="num">{key === "market_cap_weight" ? pct(1 / companies.length) : METRICS[key].format(med)}</td>;
+                return <td key={key} className="num">{key === "revenue_share" ? pct(1 / companies.length) : METRICS[key].format(med)}</td>;
               })}
             </tr>
           </tfoot>
@@ -267,12 +263,12 @@ function ConcentrationPanel({ snap, companies, selected, onSelect }: { snap: Ind
   return (
     <div className="split">
       <div>
-        <div className="panel-heading"><div><span className="eyebrow">Who holds the value</span><h3>Share of sector market cap</h3></div></div>
+        <div className="panel-heading"><div><span className="eyebrow">Who earns the revenue</span><h3>Share of industry revenue</h3></div></div>
         <ShareBars companies={companies} selected={selected} onSelect={onSelect} />
       </div>
       <aside className="stat-stack">
-        <Stat label="Top-3 share" value={pct(c.top3_share, 0)} note="of the ten companies' combined value sits in the three largest." />
-        <Stat label="Effective number of companies" value={plain(c.effective_companies, 1)} note={`The sector behaves like ${plain(c.effective_companies, 1)} equal-sized firms, not ${companies.length}.`} />
+        <Stat label="Top-3 share" value={pct(c.top3_share, 0)} note="of the ten companies' combined revenue is earned by the three largest." />
+        <Stat label="Effective number of companies" value={plain(c.effective_companies, 1)} note={`Revenue is spread as if across ${plain(c.effective_companies, 1)} equal-sized companies, not ${companies.length}.`} />
         <Stat label="Herfindahl-Hirschman index" value={hhiPts != null ? hhiPts.toLocaleString("en-IN") : "—"} note={`On the 0–10,000 scale competition regulators use: ${band}.`} />
       </aside>
     </div>
@@ -281,85 +277,6 @@ function ConcentrationPanel({ snap, companies, selected, onSelect }: { snap: Ind
 
 function Stat({ label, value: v, note }: { label: string; value: string; note: string }) {
   return <div className="stat"><span className="eyebrow">{label}</span><strong>{v}</strong><p>{note}</p></div>;
-}
-
-// ---- Diversification ---------------------------------------------------------------------
-
-function DiversificationPanel({ snap, companies, selected }: { snap: IndustrySnapshot; companies: CompanyMetrics[]; selected: string | null }) {
-  const d = snap.diversification;
-  const names = Object.fromEntries(companies.map((c) => [c.symbol, c.short_name]));
-  const [basket, setBasket] = useState<Set<string>>(() => new Set(d.symbols));
-  const toggle = (s: string) => setBasket((prev) => { const next = new Set(prev); if (next.has(s)) next.delete(s); else next.add(s); return next; });
-
-  // Equal-weight basket stats, recomputed client-side from the covariance
-  // matrix the API ships - no round trip per selection.
-  const stats = useMemo(() => {
-    const idx = d.symbols.map((s, i) => (basket.has(s) ? i : -1)).filter((i) => i >= 0);
-    const n = idx.length;
-    if (n === 0) return null;
-    const w = 1 / n;
-    let variance = 0, avgVol = 0, ret = 0, corrSum = 0, pairs = 0;
-    for (const i of idx) {
-      avgVol += w * Math.sqrt(d.covariance[i][i] ?? 0);
-      ret += w * (d.annual_returns[i] ?? 0);
-      for (const j of idx) {
-        variance += w * w * (d.covariance[i][j] ?? 0);
-        if (j > i) { corrSum += d.correlation[i][j] ?? 0; pairs += 1; }
-      }
-    }
-    const vol = Math.sqrt(variance);
-    return { n, vol, avgVol, ret, reduction: avgVol ? 1 - vol / avgVol : 0, corr: pairs ? corrSum / pairs : null };
-  }, [basket, d]);
-
-  if (d.symbols.length < 2) return <div className="empty-inline"><Layers size={17} />Price history is unavailable, so diversification can't be computed right now.</div>;
-
-  return (
-    <div>
-      <div className="panel-heading">
-        <div><span className="eyebrow">{d.lookback_days} trading days of daily returns</span><h3>How much does spreading across IT help?</h3></div>
-      </div>
-      <p className="panel-lede">
-        Correlation near 1 means two stocks rise and fall together, so holding both adds little protection. These companies share
-        clients, deal cycles and currency exposure, which puts a ceiling on diversification within one industry.
-      </p>
-      <div className="split wide-left">
-        <CorrelationHeatmap symbols={d.symbols} names={names} matrix={d.correlation} highlight={selected} />
-        <aside className="basket">
-          <div className="section-title"><span className="eyebrow">Basket builder · equal weight</span><h3>Build a basket</h3></div>
-          <div className="basket-chips" role="group" aria-label="Companies in basket">
-            {d.symbols.map((s) => (
-              <button type="button" key={s} className={basket.has(s) ? "on" : ""} aria-pressed={basket.has(s)} onClick={() => toggle(s)}>{names[s]}</button>
-            ))}
-          </div>
-          <div className="basket-actions">
-            <button type="button" onClick={() => setBasket(new Set(d.symbols))}>All ten</button>
-            <button type="button" onClick={() => {
-              const low = d.least_correlated[0];
-              if (low) setBasket(new Set([low.a, low.b]));
-            }}>Least-correlated pair</button>
-            <button type="button" onClick={() => setBasket(new Set())}>Clear</button>
-          </div>
-          {stats ? (
-            <div className="basket-stats">
-              <div><span>Basket volatility</span><strong>{pct(stats.vol, 1)}</strong></div>
-              <div><span>Avg. single-stock volatility</span><strong>{pct(stats.avgVol, 1)}</strong></div>
-              <div className="hero-stat"><span>Risk removed by diversifying</span><strong>{stats.n > 1 ? pct(stats.reduction, 0) : "—"}</strong></div>
-              <div><span>Avg. pairwise correlation</span><strong>{stats.corr != null ? stats.corr.toFixed(2) : "—"}</strong></div>
-              <div><span>Annualised mean return (1Y)</span><strong>{pct(stats.ret, 1, true)}</strong></div>
-            </div>
-          ) : <p className="muted-note">Pick at least one company.</p>}
-          <div className="pair-lists">
-            <div><span className="eyebrow">Best diversifiers</span>{d.least_correlated.map((p) => <PairRow key={p.a + p.b} a={names[p.a]} b={names[p.b]} v={p.correlation} />)}</div>
-            <div><span className="eyebrow">Move most alike</span>{d.most_correlated.map((p) => <PairRow key={p.a + p.b} a={names[p.a]} b={names[p.b]} v={p.correlation} />)}</div>
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function PairRow({ a, b, v }: { a: string; b: string; v: number }) {
-  return <div className="pair-row"><span>{a} <em>×</em> {b}</span><b>{v.toFixed(2)}</b></div>;
 }
 
 // ---- Company detail panel ---------------------------------------------------------------
@@ -376,14 +293,14 @@ function CompanyPanel({ company: c, companies, snap, onClose, onDeepDive }: { co
       <div className="drawer-overlay" onClick={onClose} />
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={`${c.name} detail`}>
         <header className="drawer-head">
-          <div className="co-cell"><span className="co-mono lg">{c.short_name.slice(0, 2).toUpperCase()}</span><div><strong>{c.name}</strong><small>{c.nse} · {c.tier} · {inr(c.price)} close{c.price_date ? " " + fmtDate(c.price_date) : ""}</small></div></div>
+          <div className="co-cell"><span className="co-mono lg">{c.short_name.slice(0, 2).toUpperCase()}</span><div><strong>{c.name}</strong><small>{c.nse} · {c.tier} · latest quarter {c.latest_quarter ? fmtDate(c.latest_quarter) : "—"}</small></div></div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close"><X size={18} /></button>
         </header>
 
         <div className="drawer-body">
           <div className="drawer-top">
-            <div><span className="eyebrow">Market cap</span><strong>{inr(c.market_cap)}</strong><small>{pct(c.market_cap_weight)} of sector</small></div>
-            <div><span className="eyebrow">Revenue (TTM)</span><strong>{inr(c.revenue_ttm)}</strong><small>4 quarters to {c.latest_quarter ? fmtDate(c.latest_quarter) : "—"}</small></div>
+            <div><span className="eyebrow">Revenue (TTM)</span><strong>{inr(c.revenue_ttm)}</strong><small>{pct(c.revenue_share)} of industry revenue</small></div>
+            <div><span className="eyebrow">Net profit (TTM)</span><strong>{inr(c.net_income_ttm)}</strong><small>{pct(c.profit_margin)} net margin</small></div>
             <div><span className="eyebrow">Shares in issue</span><strong>{c.shares_outstanding ? (c.shares_outstanding / 1e7).toLocaleString("en-IN", { maximumFractionDigits: 2 }) + " Cr" : "—"}</strong><small>from latest filing</small></div>
           </div>
 

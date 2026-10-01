@@ -43,10 +43,10 @@ class AlphaVantageProvider(FinancialDataProvider):
                 raise ValueError(f"No Alpha Vantage overview data for {company.ticker}")
 
             lines = [f"Alpha Vantage company overview for {company.name} ({company.ticker})."]
+            # Reported financials only - VeriFi doesn't deliver market data
+            # (market cap, P/E and other price-derived figures are omitted).
             fields = [
-                ("MarketCapitalization", "market_cap"),
                 ("EBITDA", "ebitda"),
-                ("PERatio", "pe_ratio"),
                 ("RevenueTTM", "revenue_ttm"),
                 ("GrossProfitTTM", "gross_profit_ttm"),
                 ("ProfitMargin", "profit_margin"),
@@ -110,7 +110,6 @@ class YFinanceProvider(FinancialDataProvider):
                 ("trailingEps", "eps_trailing"),
                 ("totalCash", "cash_and_equivalents"),
                 ("totalDebt", "total_debt"),
-                ("marketCap", "market_cap"),
             ]
             for key, label in field_map:
                 val = info.get(key)

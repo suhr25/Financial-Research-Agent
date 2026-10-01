@@ -11,7 +11,15 @@ if (-not (Test-Path ".venv")) {
 
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    Write-Host "Created .env from .env.example (DEMO_MODE=true by default)."
+    Write-Host "Created .env from .env.example."
 }
 
+# Start the PostgreSQL container when the app is configured to use it.
+$dbUrl = (Select-String -Path ".env" -Pattern "^DATABASE_URL=(.*)$").Matches.Groups[1].Value
+if ($dbUrl -like "postgresql*") {
+    Write-Host "Starting the VeriFi database (docker compose up -d db)..."
+    docker compose up -d --wait db
+}
+
+# The schema is migrated automatically on startup (Alembic).
 & ".venv\Scripts\python.exe" -m uvicorn app.main:app --reload --port 8000

@@ -46,14 +46,32 @@ class SourceRetriever:
         self.search_provider = get_search_provider()
         self.financial_provider = get_financial_data_provider()
         self.sec_provider = SECEdgarProvider()
+        self._stored_cache: dict = {}
 
     # ---- Individual retrieval tasks (run concurrently by retrieve) ------
 
     def _fetch_sec(self, company, period) -> list[Source]:
+        # Companies VeriFi holds are covered by their stored filings (see
+        # _fetch_financial); SEC EDGAR only applies to US registrants.
+        if self._stored(company) is not None:
+            return []
         return _tag_company(self.sec_provider.fetch(company, period), company.name)
 
     def _fetch_financial(self, company, period) -> list[Source]:
+        # Database first: a company VeriFi holds gets its verified, stored
+        # figures - never a third-party aggregator's copy.
+        stored = self._stored(company)
+        if stored is not None:
+            return _tag_company([stored], company.name)
         return _tag_company(self.financial_provider.fetch(company, period), company.name)
+
+    def _stored(self, company):
+        from app.datastore.research_source import database_financials
+
+        key = company.name
+        if key not in self._stored_cache:
+            self._stored_cache[key] = database_financials(company)
+        return self._stored_cache[key]
 
     def _fetch_web(self, sub_query) -> list[Source]:
         sources = self.search_provider.search(sub_query.text, max_results=3)

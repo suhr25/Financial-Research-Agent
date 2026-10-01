@@ -113,12 +113,34 @@ def test_batched_extraction_maps_each_claim_to_its_own_source():
         assert span.evidence_text == source.document_text[span.start_char:span.end_char]
 
 
+def test_misattributed_quote_is_moved_only_to_a_source_about_the_same_company():
+    """The model sometimes cites the wrong source number. A quote found
+    verbatim in another source about the SAME company is attributed there;
+    the evidence span is that source's own text."""
+    source_a = _mock_source("Revenue was $85.8 billion in Q3 2024.", title="Source A")
+    source_b = _mock_source("Net income was $21.4 billion in Q3 2024.", title="Source B")
+    source_a.metadata["company_name"] = source_b.metadata["company_name"] = "Apple Inc."
+    fake = _FakeBatchLLM({
+        "claims": [
+            {"source_number": 2, "claim_type": "numeric", "entity": "Apple Inc.", "metric": "revenue",
+             "value": "85.8", "unit": "billion", "period": "Q3 2024", "basis": "unknown",
+             "statement": "Revenue was $85.8 billion", "quoted_evidence": "Revenue was $85.8 billion"},
+        ]
+    })
+    [claim] = ClaimExtractor(llm=fake).extract("run_test", [source_a, source_b], _plan())
+    assert claim.source_id == source_a.source_id
+    assert source_a.document_text[claim.evidence_span.start_char:claim.evidence_span.end_char] == "Revenue was $85.8 billion"
+
+
 def test_batched_extraction_discards_claim_whose_quote_is_not_in_its_named_source():
     """Guards the anti-hallucination rule across the batching change: a
     quote that doesn't appear verbatim in the source it was attributed to
-    must be dropped, not silently matched against a different source."""
+    must be dropped, not silently matched against a source about a
+    DIFFERENT company."""
     source_a = _mock_source("Revenue was $85.8 billion in Q3 2024.", title="Source A")
     source_b = _mock_source("Net income was $21.4 billion in Q3 2024.", title="Source B")
+    source_a.metadata["company_name"] = "Microsoft Corporation"
+    source_b.metadata["company_name"] = "Apple Inc."
     fake = _FakeBatchLLM({
         "claims": [
             # Quote belongs to source 1, but is attributed to source 2.

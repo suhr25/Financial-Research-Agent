@@ -41,6 +41,11 @@ def summarize(industry: IndustryDefinition) -> IndustrySummary:
     )
 
 
+def industry_for_company(symbol: str) -> IndustryDefinition | None:
+    """The industry universe a company (by NSE symbol) belongs to."""
+    return next((ind for ind in _load() if any(c.nse == symbol for c in ind.companies)), None)
+
+
 def find_universe_company(text: str) -> IndustryCompanyRef | None:
     """Matches a company mention against every industry universe by NSE
     symbol, Yahoo symbol, or alias (whole words, case-insensitive). The

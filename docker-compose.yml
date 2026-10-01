@@ -1,10 +1,45 @@
+# VeriFi local stack.
+#   docker compose up -d db        -> just the database (for local development)
+#   docker compose up -d --build   -> database + app
+name: verifi
+
 services:
+  db:
+    # PostgreSQL 16 with the pgvector extension (used for searching document
+    # text by meaning). The same engine runs on Neon/Supabase when deployed.
+    image: pgvector/pgvector:pg16
+    container_name: verifi-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-verifi}
+      POSTGRES_USER: ${POSTGRES_USER:-verifi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-verifi_local_dev}
+    ports:
+      # 5434 on the host so it doesn't clash with other local Postgres instances.
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - verifi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   app:
     build: .
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Inside the compose network the database is reachable as "db".
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-verifi}:${POSTGRES_PASSWORD:-verifi_local_dev}@db:5432/${POSTGRES_DB:-verifi}
     volumes:
       - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  verifi_pgdata:

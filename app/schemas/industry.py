@@ -1,7 +1,7 @@
 """Industry-level schemas: one IndustrySnapshot is everything the industry
 dashboard shows for a peer universe (e.g. the ten NIFTY IT companies) -
-per-company metrics, deterministic cross-checks, industry aggregates,
-market-cap concentration, and return-based diversification analytics.
+per-company metrics from reported financials, deterministic consistency
+checks, industry aggregates and each company's share of industry revenue.
 
 All monetary values are absolute amounts in the industry's reporting
 currency (INR for NIFTY IT); ratios are fractions (0.24 = 24%), never
@@ -49,8 +49,8 @@ CheckStatus = Literal["verified", "mismatch", "unavailable"]
 
 class CrossCheck(BaseModel):
     """One deterministic consistency check between two independently
-    reported figures (e.g. the provider's TTM revenue vs the sum of the
-    last four reported quarters). No LLM is involved."""
+    reported figures (e.g. four quarterly filings vs. the annual report).
+    No LLM is involved."""
 
     metric: str
     label: str
@@ -60,9 +60,9 @@ class CrossCheck(BaseModel):
     tolerance_pct: float
     status: CheckStatus
     detail: str
-    # True when the provider figure being checked is NOT the one displayed
-    # (e.g. we show statement-derived growth instead). Such a check is
-    # reported but doesn't affect the company's verification status.
+    # True for notes that explain a figure (e.g. a correction to a filing's
+    # own tagging) rather than test it; they don't affect the company's
+    # verification status.
     informational: bool = False
 
 
@@ -81,9 +81,9 @@ class QuarterPoint(BaseModel):
 
 
 class CompanyMetrics(BaseModel):
-    """Every figure is either taken from an NSE filing / NSE price data or
-    computed from those with a stated formula. Nothing is estimated, and no
-    third-party aggregator is used."""
+    """Every figure is taken from the company's reported results (stored in
+    the database) or computed from them with a stated formula. Nothing is
+    estimated, and there is no market data."""
 
     name: str
     short_name: str
@@ -93,11 +93,7 @@ class CompanyMetrics(BaseModel):
     available: bool = True
     error: str | None = None
 
-    price: float | None = None
-    price_date: str | None = None
-    previous_close: float | None = None
     shares_outstanding: float | None = None
-    market_cap: float | None = None
     revenue_ttm: float | None = None
     net_income_ttm: float | None = None
     eps_ttm: float | None = None
@@ -105,14 +101,7 @@ class CompanyMetrics(BaseModel):
     earnings_growth_yoy: float | None = None
     operating_margin: float | None = None
     profit_margin: float | None = None
-    pe_trailing: float | None = None
-    dividends_ttm: float | None = None
-    dividend_yield: float | None = None
-
-    return_1y: float | None = None
-    volatility_1y: float | None = None
-    max_drawdown_1y: float | None = None
-    market_cap_weight: float | None = None
+    revenue_share: float | None = None
 
     latest_quarter: str | None = None
     quarters: list[QuarterPoint] = Field(default_factory=list)
@@ -133,7 +122,9 @@ class MetricAggregate(BaseModel):
 
 
 class Concentration(BaseModel):
-    total_market_cap: float | None = None
+    """How the industry's revenue is split between its companies."""
+
+    total_revenue: float | None = None
     hhi: float | None = None
     effective_companies: float | None = None
     top3_share: float | None = None
@@ -141,35 +132,8 @@ class Concentration(BaseModel):
     largest_share: float | None = None
 
 
-class PairCorrelation(BaseModel):
-    a: str
-    b: str
-    correlation: float
-
-
-class PortfolioStats(BaseModel):
-    label: str
-    expected_return: float | None = None
-    volatility: float | None = None
-    diversification_ratio: float | None = None
-    volatility_reduction: float | None = None
-
-
-class Diversification(BaseModel):
-    symbols: list[str] = Field(default_factory=list)
-    lookback_days: int = 0
-    correlation: list[list[float | None]] = Field(default_factory=list)
-    covariance: list[list[float | None]] = Field(default_factory=list)
-    annual_returns: list[float | None] = Field(default_factory=list)
-    average_pairwise_correlation: float | None = None
-    equal_weight: PortfolioStats | None = None
-    market_cap_weight: PortfolioStats | None = None
-    least_correlated: list[PairCorrelation] = Field(default_factory=list)
-    most_correlated: list[PairCorrelation] = Field(default_factory=list)
-
-
 class Insight(BaseModel):
-    kind: Literal["concentration", "growth", "profitability", "valuation", "diversification", "risk", "data"]
+    kind: Literal["concentration", "growth", "profitability", "earnings", "data"]
     title: str
     detail: str
 
@@ -182,11 +146,11 @@ class IndustrySnapshot(BaseModel):
     fetch_seconds: float | None = None
     stale: bool = False
     refreshing: bool = False
-    price_date: str | None = None
-    source: str = "NSE India - company results filings (XBRL) and NSE end-of-day prices"
+    # When the stored data was last checked against the source (oldest company).
+    synced_at: datetime | None = None
+    source: str = "Companies' reported quarterly results (consolidated), stored in the VeriFi database"
     companies: list[CompanyMetrics]
     aggregates: dict[str, MetricAggregate] = Field(default_factory=dict)
     concentration: Concentration = Field(default_factory=Concentration)
-    diversification: Diversification = Field(default_factory=Diversification)
     insights: list[Insight] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

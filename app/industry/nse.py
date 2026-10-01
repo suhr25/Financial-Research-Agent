@@ -1,44 +1,29 @@
-"""NSE India client - the official source for the industry dashboard.
+"""Exchange filings client - the automated source of company financials.
 
-Everything the dashboard shows comes from the exchange itself:
-  - Company financials: the XBRL of each company's quarterly results as
-    filed with NSE ("Integrated Filing - Financials", consolidated). These
-    are the audited/reviewed numbers the company published, not an
-    aggregator's re-keyed copy.
-  - Prices: NSE's security-wise daily price history (EQ series), with the
-    latest close cross-checked against NSE's end-of-day bhavcopy file.
-  - Corporate actions: splits/bonuses (to adjust historical prices) and
-    dividends (for dividend yield).
+Company financials come from the XBRL of each company's quarterly results as
+filed with the exchange ("Integrated Filing - Financials", consolidated):
+the audited/reviewed numbers the company published, not an aggregator's
+re-keyed copy. Parsed filings are stored in the database (app/datastore);
+this module only lists and parses them.
 
-NSE's JSON APIs need a browser-like client with session cookies, so a
-Chrome-impersonating curl_cffi session is warmed on the homepage first.
+The exchange's JSON API needs a browser-like client with session cookies, so
+a Chrome-impersonating curl_cffi session is warmed on the homepage first.
 One session per thread - curl_cffi sessions aren't safe to share.
 """
 from __future__ import annotations
 
-import csv
-import io
-import json
 import logging
 import re
 import threading
-import zipfile
-from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from dataclasses import dataclass, field
+from datetime import date, datetime
 
 logger = logging.getLogger("financial_research_agent.industry.nse")
 
 BASE = "https://www.nseindia.com"
 FILINGS_URL = BASE + "/api/integrated-filing-results?index=equities&symbol={symbol}&type=Integrated%20Filing-%20Financials"
-HISTORY_URL = (BASE + "/api/historicalOR/generateSecurityWiseHistoricalData"
-               "?from={start}&to={end}&symbol={symbol}&type=priceVolumeDeliverable&series=ALL")
-ACTIONS_URL = BASE + "/api/corporates-corporateActions?index=equities&symbol={symbol}"
-BHAVCOPY_URL = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{day}_F_0000.csv.zip"
 
 TIMEOUT = 20
-# NSE returns at most ~3 months of daily rows per history request.
-HISTORY_CHUNK_DAYS = 85
 
 
 class NSEError(RuntimeError):
@@ -238,13 +223,10 @@ def _filed(row: dict) -> datetime:
         return datetime.min
 
 
-def fetch_filings(symbol: str, cache_dir: Path, max_quarters: int = 6) -> list[Filing]:
-    """The company's latest consolidated quarterly filings, newest first.
-
-    When a quarter was filed more than once (a revision), the most recently
-    broadcast filing wins. Parsed filings are cached on disk keyed by their
-    archive URL - an exchange filing never changes once published, so each
-    XBRL is downloaded exactly once."""
+def list_filings(symbol: str, max_quarters: int = 6) -> list[dict]:
+    """The company's latest consolidated quarterly filings (metadata only),
+    newest first. When a quarter was filed more than once (a revision), the
+    most recently broadcast filing wins."""
     rows = _get(FILINGS_URL.format(symbol=symbol), BASE + "/companies-listing/corporate-integrated-filing").json().get("data", [])
     latest: dict[str, dict] = {}
     for row in rows:
@@ -253,88 +235,9 @@ def fetch_filings(symbol: str, cache_dir: Path, max_quarters: int = 6) -> list[F
         prev = latest.get(row["qe_Date"])
         if prev is None or _filed(row) > _filed(prev):
             latest[row["qe_Date"]] = row
-    chosen = sorted(latest.values(), key=lambda r: datetime.strptime(r["qe_Date"], "%d-%b-%Y"), reverse=True)[:max_quarters]
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    filings = []
-    for row in chosen:
-        path = cache_dir / (Path(row["xbrl"]).stem + ".json")
-        if path.exists():
-            try:
-                filings.append(Filing(**json.loads(path.read_text(encoding="utf-8"))))
-                continue
-            except (TypeError, ValueError):
-                pass
-        xml = _get(row["xbrl"]).text
-        filing = parse_filing_xbrl(xml, {**row, "symbol": symbol})
-        path.write_text(json.dumps(asdict(filing)), encoding="utf-8")
-        filings.append(filing)
-    return filings
+    return sorted(latest.values(), key=lambda r: datetime.strptime(r["qe_Date"], "%d-%b-%Y"), reverse=True)[:max_quarters]
 
 
-# ---- Prices & corporate actions ------------------------------------------------------
-
-
-def fetch_price_history(symbol: str, days: int = 366, today: date | None = None) -> list[tuple[date, float]]:
-    """Daily EQ-series closes, oldest first, unadjusted (as traded)."""
-    end = today or date.today()
-    start = end - timedelta(days=days)
-    closes: dict[date, float] = {}
-    chunk_end = end
-    while chunk_end > start:
-        chunk_start = max(start, chunk_end - timedelta(days=HISTORY_CHUNK_DAYS))
-        url = HISTORY_URL.format(symbol=symbol, start=chunk_start.strftime("%d-%m-%Y"), end=chunk_end.strftime("%d-%m-%Y"))
-        for row in _get(url, BASE + f"/get-quotes/equity?symbol={symbol}").json().get("data", []):
-            if row.get("CH_SERIES") != "EQ" or row.get("CH_CLOSING_PRICE") is None:
-                continue
-            closes[datetime.strptime(row["mTIMESTAMP"], "%d-%b-%Y").date()] = float(row["CH_CLOSING_PRICE"])
-        chunk_end = chunk_start - timedelta(days=1)
-    return sorted(closes.items())
-
-
-@dataclass
-class CorporateAction:
-    ex_date: date
-    subject: str
-    split_factor: float | None = None   # shares multiply by this on ex_date
-    dividend: float | None = None       # rupees per share
-
-
-_RUPEES = re.compile(r"\bR[se]\.?\s*([\d]+(?:\.\d+)?)", re.IGNORECASE)
-
-
-def parse_action(ex_date: date, subject: str) -> CorporateAction:
-    action = CorporateAction(ex_date=ex_date, subject=subject)
-    bonus = re.search(r"bonus\s*(\d+)\s*:\s*(\d+)", subject, re.IGNORECASE)
-    split = re.search(r"split.*?from\s*r[se]\.?\s*([\d.]+).*?to\s*r[se]\.?\s*([\d.]+)", subject, re.IGNORECASE)
-    if bonus:  # "Bonus a:b" = a new shares for every b held
-        a, b = float(bonus.group(1)), float(bonus.group(2))
-        action.split_factor = (a + b) / b
-    elif split:
-        old, new = float(split.group(1)), float(split.group(2))
-        if new:
-            action.split_factor = old / new
-    elif "dividend" in subject.lower():
-        action.dividend = sum(float(v) for v in _RUPEES.findall(subject)) or None
-    return action
-
-
-def fetch_corporate_actions(symbol: str) -> list[CorporateAction]:
-    rows = _get(ACTIONS_URL.format(symbol=symbol), BASE + f"/get-quotes/equity?symbol={symbol}").json()
-    actions = []
-    for row in rows if isinstance(rows, list) else []:
-        try:
-            ex = datetime.strptime(row["exDate"], "%d-%b-%Y").date()
-        except (KeyError, ValueError):
-            continue
-        actions.append(parse_action(ex, row.get("subject") or ""))
-    return actions
-
-
-def fetch_bhavcopy_closes(day: date) -> dict[str, float]:
-    """NSE's official end-of-day file for one trading day: EQ closes by symbol."""
-    resp = _get(BHAVCOPY_URL.format(day=day.strftime("%Y%m%d")))
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        with zf.open(zf.namelist()[0]) as fh:
-            reader = csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8"))
-            return {r["TckrSymb"]: float(r["ClsPric"]) for r in reader if r.get("SctySrs") == "EQ" and r.get("ClsPric")}
+def download_filing(symbol: str, row: dict) -> Filing:
+    """Downloads and parses one filing listed by list_filings."""
+    return parse_filing_xbrl(_get(row["xbrl"]).text, {**row, "symbol": symbol})

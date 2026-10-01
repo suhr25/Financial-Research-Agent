@@ -54,3 +54,8 @@ class ResearchRun(BaseModel):
     followup_iterations_used: int = 0
     research_queries_used: int = 0
     error: str | None = None
+    # Which version of the pipeline produced this run. Only runs from the
+    # current version are reused for a repeated question: version 2 takes
+    # figures for companies VeriFi holds from the database; older runs used
+    # third-party aggregators and must not be served again.
+    pipeline_version: int | None = None

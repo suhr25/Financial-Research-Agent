@@ -69,10 +69,33 @@ def make_evidence(source: Source, snippet: str, occurrence: int = 0) -> Evidence
     for i in range(occurrence + 1):
         idx = text.find(snippet, idx + 1)
         if idx == -1:
-            return None
+            return _locate_tolerant(source, snippet) if occurrence == 0 else None
         start = idx
     end = start + len(snippet)
     return Evidence(source_id=source.source_id, start_char=start, end_char=end, evidence_text=snippet)
+
+
+_QUOTE_CLASSES = {"'": "['\u2018\u2019]", "\u2018": "['\u2018\u2019]", "\u2019": "['\u2018\u2019]",
+                  '"': '["\u201c\u201d]', "\u201c": '["\u201c\u201d]', "\u201d": '["\u201c\u201d]',
+                  "-": "[-\u2010\u2011\u2012\u2013\u2014]", "\u2013": "[-\u2013\u2014]", "\u2014": "[-\u2013\u2014]"}
+
+
+def _locate_tolerant(source: Source, snippet: str) -> Evidence | None:
+    """Finds a quote that differs from the source only in whitespace (line
+    breaks, repeated spaces) or straight-vs-curly quotes and dashes - common
+    when a model re-types text extracted from a web page. The evidence span
+    is still the source's own text, character for character: nothing is
+    paraphrased or invented, only the formatting of the quote is forgiven."""
+    import re
+
+    words = snippet.split()
+    if len(words) < 4:
+        return None
+    pattern = r"\s+".join("".join(_QUOTE_CLASSES.get(ch, re.escape(ch)) for ch in w) for w in words)
+    m = re.search(pattern, source.document_text)
+    if not m:
+        return None
+    return Evidence(source_id=source.source_id, start_char=m.start(), end_char=m.end(), evidence_text=m.group(0))
 
 
 def full_document_evidence(source: Source) -> Evidence:

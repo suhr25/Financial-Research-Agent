@@ -13,6 +13,7 @@ import {
   FileText,
   Filter,
   Globe2,
+  Database,
   Layers,
   LayoutDashboard,
   ScanSearch,
@@ -27,11 +28,13 @@ import {
   X,
 } from "lucide-react";
 import { IndustryView } from "./industry/IndustryView";
-import { api, industryApi, type IndustrySummary, type Claim, type Conflict, type HealthResponse, type Report, type ResearchRun, type Source } from "./services/api";
+import { api, industryApi, type DatabaseAnswer as DatabaseAnswerData, type IndustrySummary, type Claim, type Conflict, type HealthResponse, type Report, type ResearchRun, type Source } from "./services/api";
 import { Sidebar, type NavSection } from "./components/Sidebar";
 import { UserMenu } from "./components/UserMenu";
 import { Tabs } from "./components/Tabs";
 import { Pipeline } from "./research/Pipeline";
+import { inr as inrFmt } from "./lib/format";
+import { DatabaseAnswer } from "./research/DatabaseAnswer";
 import type { SessionUser } from "./services/api";
 
 type Tab = "overview" | "financials" | "risks" | "findings" | "claims" | "conflicts" | "sources";
@@ -77,6 +80,11 @@ function App({ user, onSignOut }: { user: SessionUser; onSignOut: (next?: "signi
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Database-first answers: dbAnswer is set when the question was answered
+  // from stored filings; notice explains why full research is running instead.
+  const [dbAnswer, setDbAnswer] = useState<DatabaseAnswerData | null>(null);
+  const [notice, setNotice] = useState("");
+  const [phase, setPhase] = useState<"answering" | "researching" | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem("verifi.sidebar") === "collapsed"; } catch { return false; } });
   const toggleSidebar = useCallback(() => setCollapsed((c) => {
@@ -92,16 +100,32 @@ function App({ user, onSignOut }: { user: SessionUser; onSignOut: (next?: "signi
   const go = (next: AppView) => { setAppView(next); setSidebarOpen(false); window.scrollTo({ top: 0 }); };
   const openDeepDive = (nextQuery: string) => { go({ kind: "research" }); setQuery(nextQuery); runResearch(nextQuery); };
 
-  const runResearch = async (nextQuery = query) => {
+  const runResearch = async (nextQuery = query, options: { fullResearch?: boolean } = {}) => {
     const trimmed = nextQuery.trim();
     if (!trimmed || loading) return;
     setQuery(trimmed); setLoading(true); setError(""); setRun(null); setReport(null); setClaims([]); setSources([]); setConflicts([]);
+    setDbAnswer(null); setNotice("");
     try {
+      // 1. Database first - answered from stored, verified filings in
+      //    milliseconds whenever VeriFi holds the companies asked about.
+      if (!options.fullResearch) {
+        setPhase("answering");
+        const answer = await api.answer(trimmed);
+        if (answer.answered) {
+          setDbAnswer(answer);
+          return;
+        }
+        setNotice(`${answer.reason} Running full research from live sources instead - this takes a few minutes (a recent run of the same question is reused instantly).`);
+      }
+      // 2. Otherwise full research (reused instantly if the same question
+      //    was researched recently).
+      setPhase("researching");
       // The pipeline runs in the background on the server - this call
       // returns immediately with status="pending" and a run id. We poll
       // for live status instead of blocking on one long request, so the
       // UI can show real progress (and never silently hangs on a
       // multi-minute real-data run).
+      // Not forced fresh: a recent run of the same question is reused instantly.
       const startedRun = await api.startResearch(trimmed);
       setRun(startedRun);
 
@@ -129,7 +153,7 @@ function App({ user, onSignOut }: { user: SessionUser; onSignOut: (next?: "signi
       setClaims(nextClaims); setSources(nextSources); setConflicts(nextConflicts); setReport(nextReport); setActiveTab("overview");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-    } finally { setLoading(false); }
+    } finally { setLoading(false); setPhase(null); }
   };
 
   const company = run?.plan?.companies?.map((item) => item.ticker ? `${item.name} (${item.ticker})` : item.name).join(", ") || run?.plan?.raw_query || "Awaiting research";
@@ -165,10 +189,13 @@ function App({ user, onSignOut }: { user: SessionUser; onSignOut: (next?: "signi
         {appView.kind === "research" && <div className="view-anim">
           <section className="hero"><div><div className="hero-kicker"><Sparkles size={14} /> VERIFIED REPORTS</div><h1>Verified deep dive</h1><p>One company, every claim traced to its source. Slower by design - each figure is checked by the LLM verifier.</p></div><div className="hero-note"><ShieldCheck size={17} /><span>Every factual claim is independently verified against its source.</span></div></section>
           <section className="query-panel"><div className="query-label"><Search size={15} /><label htmlFor="research-query">Company or research query</label><kbd>ENTER</kbd></div><div className="query-row"><input id="research-query" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && runResearch()} placeholder="e.g. Analyze Infosys revenue and risks" disabled={loading} /><Button variant="primary" onClick={() => runResearch()} disabled={loading}>{loading ? <><LoaderCircle size={15} className="spin" /> Running</> : <><Send size={15} /> Run research</>}</Button></div><div className="example-chips">{examples.map((example) => <button type="button" key={example} onClick={() => runResearch(example)} disabled={loading}>{example}</button>)}</div>{health && <div className={`mode-banner ${health.demo_mode ? "demo" : "live"}`}><StatusDot tone={health.demo_mode ? "amber" : "teal"} /><span>{health.demo_mode ? "Demo mode: sources are synthetic and explicitly labelled." : "Live mode: connected to real filings, financial data, and web sources."}</span></div>}</section>
-          {loading && <Pipeline run={run} running />}
+          {notice && <div className="notice-strip"><Database size={15} /><span>{notice}</span></div>}
+          {phase === "answering" && <div className="notice-strip"><LoaderCircle size={15} className="spin" /><span>Looking it up in the VeriFi database…</span></div>}
+          {phase === "researching" && <Pipeline run={run} running />}
+          {dbAnswer && !loading && <DatabaseAnswer answer={dbAnswer} onRunResearch={() => runResearch(dbAnswer.query, { fullResearch: true })} onOpenIndustry={() => go({ kind: "industry", id: industries[0]?.id ?? "information-technology" })} />}
           {error && <div className="error-panel"><AlertTriangle size={18} /><div><strong>Research could not be completed</strong><span>{error}</span></div><button type="button" onClick={() => setError("")} aria-label="Dismiss error"><X size={16} /></button></div>}
           {run && report && <ResearchResults company={company} run={run} report={report} claims={claims} sources={sources} conflicts={conflicts} activeTab={activeTab} setActiveTab={setActiveTab} claimFilter={claimFilter} setClaimFilter={setClaimFilter} filteredClaims={filteredClaims} />}
-          {!run && !loading && !error && <Pipeline />}
+          {!run && !loading && !error && !dbAnswer && <Pipeline />}
         </div>}
       </div>
     </main>
@@ -216,7 +243,10 @@ function metricValue(claim: Claim): string {
   const mag = claim.normalized?.magnitude;
   if (mag == null) return `${raw}${claim.unit ? ` ${claim.unit}` : ""}`;
   const base = claim.normalized?.base_unit ?? "";
-  const sym = base === "INR" ? "₹" : base === "USD" || base === "" ? "$" : "";
+  // Only show a currency symbol when the currency is actually known.
+  // Rupee amounts use the same crore / lakh-crore notation as the rest of VeriFi.
+  if (base === "INR") return inrFmt(mag);
+  const sym = base === "USD" ? "$" : "";
   const abs = Math.abs(mag);
   for (const [cut, sfx] of [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]] as [number, string][]) {
     if (abs >= cut) return `${sym}${(mag / cut).toFixed(2)}${sfx}`;
@@ -234,9 +264,10 @@ function FinancialsTab({ claims, section }: { claims: Claim[]; section: { conten
     const k = c.metric.toLowerCase().replace(/_/g, "");
     return FINANCIAL_KEYS.some((core) => k.includes(core));
   });
+  // One figure per company per metric (strongest verdict wins).
   const best = new Map<string, Claim>();
   for (const c of financial) {
-    const key = metricLabel(c.metric);
+    const key = `${c.entity}::${metricLabel(c.metric)}`;
     const prev = best.get(key);
     if (!prev || rank(c.verification_status) > rank(prev.verification_status) || (rank(c.verification_status) === rank(prev.verification_status) && (c.confidence ?? 0) > (prev.confidence ?? 0))) {
       best.set(key, c);
@@ -253,8 +284,11 @@ function FinancialsTab({ claims, section }: { claims: Claim[]; section: { conten
 
   return <article className="report-text">
     <div className="section-title"><span className="eyebrow">Verified report section</span><h3>Financial performance</h3></div>
+    {[...new Set(rows.map((c) => c.entity))].map((entity) => (
+    <div className="fin-entity" key={entity}>
+    <h4 className="fin-entity-name">{entity}</h4>
     <div className="fin-grid">
-      {rows.map((c) => (
+      {rows.filter((c) => c.entity === entity).map((c) => (
         <div className={`fin-card ${c.verification_status || "insufficient"}`} key={c.claim_id}>
           <span className="fin-metric">{metricLabel(c.metric)}</span>
           <strong className="fin-value">{metricValue(c)}</strong>
@@ -269,6 +303,8 @@ function FinancialsTab({ claims, section }: { claims: Claim[]; section: { conten
         </div>
       ))}
     </div>
+    </div>
+    ))}
     <p className="fin-note">
       Every figure above is shown with the verdict its own source evidence produced. Figures marked
       <strong> insufficient</strong> were retrieved but could not be tied to the requested period — they are not verified facts.
